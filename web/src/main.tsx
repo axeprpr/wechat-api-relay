@@ -130,6 +130,7 @@ function App() {
   const [currentView, setCurrentView] = React.useState<ViewKey>('rules')
   const [statusMessage, setStatusMessage] = React.useState('Ready')
   const [statusKind, setStatusKind] = React.useState<'info' | 'success' | 'error'>('info')
+  const [toastVisible, setToastVisible] = React.useState(false)
 
   const [ruleSearch, setRuleSearch] = React.useState('')
   const [ruleModalOpen, setRuleModalOpen] = React.useState(false)
@@ -167,6 +168,12 @@ function App() {
     void loadState()
   }, [loadState])
 
+  React.useEffect(() => {
+    if (!toastVisible) return
+    const timer = window.setTimeout(() => setToastVisible(false), 3200)
+    return () => window.clearTimeout(timer)
+  }, [toastVisible, statusMessage, statusKind])
+
   const bindRulesAfterLogin = React.useCallback(
     async (accountID: string, ruleIDs: string[]) => {
       const settings = await apiJSON<Settings>('/api/settings')
@@ -193,8 +200,7 @@ function App() {
     const timer = window.setInterval(async () => {
       try {
         const data = await apiJSON<{ status: string; account_id?: string }>(`/api/login/status?session_key=${encodeURIComponent(loginSession)}`)
-        setStatusKind('info')
-        setStatusMessage(`登录状态：${data.status}`)
+        notify('info', `登录状态：${data.status}`)
         if (data.status === 'confirmed') {
           window.clearInterval(timer)
           setLoginSession('')
@@ -204,19 +210,23 @@ function App() {
             setPendingRuleIDs([])
           }
           await loadState()
-          setStatusKind('success')
-          setStatusMessage('微信配置创建成功')
+          notify('success', '微信配置创建成功')
         }
       } catch (error) {
         window.clearInterval(timer)
-        setStatusKind('error')
-        setStatusMessage(getErrorMessage(error))
+        notify('error', getErrorMessage(error))
       }
     }, 2500)
     return () => window.clearInterval(timer)
   }, [bindRulesAfterLogin, loadState, loginSession, pendingRuleIDs])
 
   if (!state) return <div className='loading'>Loading…</div>
+
+  const notify = (kind: 'info' | 'success' | 'error', message: string) => {
+    setStatusKind(kind)
+    setStatusMessage(message)
+    setToastVisible(true)
+  }
 
   const filteredRules = state.settings.rules.filter((rule) => {
     const term = ruleSearch.trim().toLowerCase()
@@ -276,11 +286,9 @@ function App() {
         : [...state.settings.rules, nextRule]
       await persistSettings({ ...state.settings, rules })
       setRuleModalOpen(false)
-      setStatusKind('success')
-      setStatusMessage(exists ? '规则已更新' : '规则已创建')
+      notify('success', exists ? '规则已更新' : '规则已创建')
     } catch (error) {
-      setStatusKind('error')
-      setStatusMessage(getErrorMessage(error, 'Headers 或 Query 不是合法 JSON'))
+      notify('error', getErrorMessage(error, 'Headers 或 Query 不是合法 JSON'))
     }
   }
 
@@ -293,8 +301,7 @@ function App() {
       ])
     )
     await persistSettings({ ...state.settings, rules, account_rules: accountRules })
-    setStatusKind('success')
-    setStatusMessage('规则已删除')
+    notify('success', '规则已删除')
   }
 
   const runPreview = async () => {
@@ -316,11 +323,9 @@ function App() {
       })
       setPreviewResult((data.result as PreviewResult) ?? null)
       setPreviewError((data.error as string) ?? '')
-      setStatusKind(data.error ? 'error' : 'success')
-      setStatusMessage(data.error || '规则调试完成')
+      notify(data.error ? 'error' : 'success', data.error || '规则调试完成')
     } catch (error) {
-      setStatusKind('error')
-      setStatusMessage(getErrorMessage(error))
+      notify('error', getErrorMessage(error))
       setPreviewError(getErrorMessage(error))
     } finally {
       setPreviewLoading(false)
@@ -366,8 +371,7 @@ function App() {
     }
     await persistSettings(nextSettings)
     setConfigModalOpen(false)
-    setStatusKind('success')
-    setStatusMessage('微信配置已更新')
+    notify('success', '微信配置已更新')
   }
 
   const startConfigLogin = async () => {
@@ -387,11 +391,9 @@ function App() {
       setQrURL(`/api/login/qr?content=${encodeURIComponent(data.qr_code_url)}`)
       setLoginSession(data.session_key)
       setConfigStep(3)
-      setStatusKind('info')
-      setStatusMessage('请扫码完成微信配置绑定')
+      notify('info', '请扫码完成微信配置绑定')
     } catch (error) {
-      setStatusKind('error')
-      setStatusMessage(getErrorMessage(error))
+      notify('error', getErrorMessage(error))
     }
   }
 
@@ -401,11 +403,9 @@ function App() {
       await persistSettings(nextSettings)
       await apiJSON(`/api/runtime/start?account_id=${encodeURIComponent(accountID)}`, { method: 'POST' })
       await loadState()
-      setStatusKind('success')
-      setStatusMessage('微信配置已上线')
+      notify('success', '微信配置已上线')
     } catch (error) {
-      setStatusKind('error')
-      setStatusMessage(getErrorMessage(error))
+      notify('error', getErrorMessage(error))
     }
   }
 
@@ -413,11 +413,9 @@ function App() {
     try {
       await apiJSON(`/api/runtime/stop?account_id=${encodeURIComponent(accountID)}`, { method: 'POST' })
       await loadState()
-      setStatusKind('success')
-      setStatusMessage('微信配置已下线')
+      notify('success', '微信配置已下线')
     } catch (error) {
-      setStatusKind('error')
-      setStatusMessage(getErrorMessage(error))
+      notify('error', getErrorMessage(error))
     }
   }
 
@@ -453,7 +451,6 @@ function App() {
       </aside>
 
       <main className='main clean-main'>
-        {statusMessage && statusMessage !== 'Ready' ? <div className={`page-status ${statusKind}`}>{statusMessage}</div> : null}
         {currentView === 'rules' ? (
           <section className='list-page'>
             <div className='list-toolbar'>
@@ -806,6 +803,17 @@ function App() {
             ) : null}
           </div>
         </Modal>
+      ) : null}
+
+      {toastVisible && statusMessage && statusMessage !== 'Ready' ? (
+        <div className='toast-stack'>
+          <div className={`toast ${statusKind}`}>
+            <span>{statusMessage}</span>
+            <button className='toast-close' onClick={() => setToastVisible(false)}>
+              <X size={14} />
+            </button>
+          </div>
+        </div>
       ) : null}
     </div>
   )
