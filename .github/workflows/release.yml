@@ -25,9 +25,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - name: Setup nfpm
-        uses: goreleaser/nfpm-action@v1
-        with:
-          version: latest
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
 
       - name: Resolve version
         id: version
@@ -55,8 +53,8 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.value }}
         run: |
-          nfpm package --config packaging/nfpm.yaml --target dist/packages/wechat-api-relay_${VERSION}_linux_amd64.deb
-          nfpm package --config packaging/nfpm.yaml --packager rpm --target dist/packages/wechat-api-relay-${VERSION}-1.x86_64.rpm
+          $(go env GOPATH)/bin/nfpm package --config packaging/nfpm.yaml --target dist/packages/wechat-api-relay_${VERSION}_linux_amd64.deb
+          $(go env GOPATH)/bin/nfpm package --config packaging/nfpm.yaml --packager rpm --target dist/packages/wechat-api-relay-${VERSION}-1.x86_64.rpm
           tar -czf dist/packages/wechat-api-relay_${VERSION}_linux_amd64.tar.gz dist/wechat-api-relay web/dist README.md README_EN.md docs
 
       - name: Publish release assets
