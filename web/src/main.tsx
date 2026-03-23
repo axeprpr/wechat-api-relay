@@ -104,6 +104,7 @@ type JsonDrafts = {
 type ViewKey = 'rules' | 'weixin'
 type RuleStep = 1 | 2 | 3
 type ConfigStep = 1 | 2 | 3
+type RuleEditorTab = 'headers' | 'query' | 'body' | 'response'
 
 const emptyRule = (): Rule => ({
   id: `rule-${Math.random().toString(36).slice(2, 8)}`,
@@ -128,10 +129,12 @@ function App() {
   const [state, setState] = React.useState<AppState | null>(null)
   const [currentView, setCurrentView] = React.useState<ViewKey>('rules')
   const [statusMessage, setStatusMessage] = React.useState('Ready')
+  const [statusKind, setStatusKind] = React.useState<'info' | 'success' | 'error'>('info')
 
   const [ruleSearch, setRuleSearch] = React.useState('')
   const [ruleModalOpen, setRuleModalOpen] = React.useState(false)
   const [ruleStep, setRuleStep] = React.useState<RuleStep>(1)
+  const [ruleEditorTab, setRuleEditorTab] = React.useState<RuleEditorTab>('headers')
   const [ruleDraft, setRuleDraft] = React.useState<RuleDraft>(emptyRule())
   const [ruleJsonDrafts, setRuleJsonDrafts] = React.useState<JsonDrafts>({ headers: '{}', query: '{}' })
   const [rulePreviewAccountId, setRulePreviewAccountId] = React.useState('')
@@ -155,8 +158,7 @@ function App() {
   const [pendingRuleIDs, setPendingRuleIDs] = React.useState<string[]>([])
 
   const loadState = React.useCallback(async () => {
-    const resp = await fetch('/api/state')
-    const data = (await resp.json()) as AppState
+    const data = (await apiJSON<AppState>('/api/state')) as AppState
     setState(data)
     setRulePreviewAccountId((current) => current || data.settings.active_account_id || data.accounts[0]?.id || '')
   }, [])
@@ -167,8 +169,7 @@ function App() {
 
   const bindRulesAfterLogin = React.useCallback(
     async (accountID: string, ruleIDs: string[]) => {
-      const resp = await fetch('/api/settings')
-      const settings = (await resp.json()) as Settings
+      const settings = await apiJSON<Settings>('/api/settings')
       const next: Settings = {
         ...settings,
         active_account_id: accountID,
@@ -177,12 +178,11 @@ function App() {
           [accountID]: ruleIDs,
         },
       }
-      const putResp = await fetch('/api/settings', {
+      const saved = await apiJSON<Settings>('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(next),
       })
-      const saved = (await putResp.json()) as Settings
       setState((current) => (current ? { ...current, settings: saved } : current))
     },
     []
@@ -191,19 +191,26 @@ function App() {
   React.useEffect(() => {
     if (!loginSession) return
     const timer = window.setInterval(async () => {
-      const resp = await fetch(`/api/login/status?session_key=${encodeURIComponent(loginSession)}`)
-      const data = await resp.json()
-      setStatusMessage(`登录状态：${data.status}`)
-      if (data.status === 'confirmed') {
-        window.clearInterval(timer)
-        setLoginSession('')
-        setQrURL('')
-        if (data.account_id && pendingRuleIDs.length > 0) {
-          await bindRulesAfterLogin(data.account_id as string, pendingRuleIDs)
-          setPendingRuleIDs([])
+      try {
+        const data = await apiJSON<{ status: string; account_id?: string }>(`/api/login/status?session_key=${encodeURIComponent(loginSession)}`)
+        setStatusKind('info')
+        setStatusMessage(`登录状态：${data.status}`)
+        if (data.status === 'confirmed') {
+          window.clearInterval(timer)
+          setLoginSession('')
+          setQrURL('')
+          if (data.account_id && pendingRuleIDs.length > 0) {
+            await bindRulesAfterLogin(data.account_id, pendingRuleIDs)
+            setPendingRuleIDs([])
+          }
+          await loadState()
+          setStatusKind('success')
+          setStatusMessage('微信配置创建成功')
         }
-        await loadState()
-        setStatusMessage('微信配置创建成功')
+      } catch (error) {
+        window.clearInterval(timer)
+        setStatusKind('error')
+        setStatusMessage(getErrorMessage(error))
       }
     }, 2500)
     return () => window.clearInterval(timer)
@@ -221,12 +228,11 @@ function App() {
   })
 
   const persistSettings = async (nextSettings: Settings) => {
-    const resp = await fetch('/api/settings', {
+    const data = await apiJSON<Settings>('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(nextSettings),
     })
-    const data = (await resp.json()) as Settings
     setState((current) => (current ? { ...current, settings: data } : current))
     return data
   }
@@ -242,6 +248,7 @@ function App() {
     setPreviewResult(null)
     setPreviewError('')
     setRuleStep(1)
+    setRuleEditorTab('headers')
     setRuleModalOpen(true)
   }
 
@@ -254,6 +261,7 @@ function App() {
     setPreviewResult(null)
     setPreviewError('')
     setRuleStep(1)
+    setRuleEditorTab('headers')
     setRuleModalOpen(true)
   }
 
@@ -268,9 +276,11 @@ function App() {
         : [...state.settings.rules, nextRule]
       await persistSettings({ ...state.settings, rules })
       setRuleModalOpen(false)
+      setStatusKind('success')
       setStatusMessage(exists ? '规则已更新' : '规则已创建')
-    } catch {
-      setStatusMessage('Headers 或 Query 不是合法 JSON')
+    } catch (error) {
+      setStatusKind('error')
+      setStatusMessage(getErrorMessage(error, 'Headers 或 Query 不是合法 JSON'))
     }
   }
 
@@ -283,6 +293,7 @@ function App() {
       ])
     )
     await persistSettings({ ...state.settings, rules, account_rules: accountRules })
+    setStatusKind('success')
     setStatusMessage('规则已删除')
   }
 
@@ -293,7 +304,7 @@ function App() {
     try {
       const headers = JSON.parse(ruleJsonDrafts.headers) as Record<string, string>
       const query = JSON.parse(ruleJsonDrafts.query) as Record<string, string>
-      const resp = await fetch('/api/rules/preview', {
+      const data = await apiJSON<{ result?: PreviewResult; error?: string }>('/api/rules/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -303,9 +314,14 @@ function App() {
           text: rulePreviewText,
         }),
       })
-      const data = await resp.json()
       setPreviewResult((data.result as PreviewResult) ?? null)
       setPreviewError((data.error as string) ?? '')
+      setStatusKind(data.error ? 'error' : 'success')
+      setStatusMessage(data.error || '规则调试完成')
+    } catch (error) {
+      setStatusKind('error')
+      setStatusMessage(getErrorMessage(error))
+      setPreviewError(getErrorMessage(error))
     } finally {
       setPreviewLoading(false)
     }
@@ -350,41 +366,59 @@ function App() {
     }
     await persistSettings(nextSettings)
     setConfigModalOpen(false)
+    setStatusKind('success')
     setStatusMessage('微信配置已更新')
   }
 
   const startConfigLogin = async () => {
-    const nextSettings: Settings = {
-      ...state.settings,
-      weixin: {
-        ...state.settings.weixin,
-        base_url: configDraft.base_url,
-        bot_type: configDraft.bot_type,
-        route_tag: configDraft.route_tag,
-      },
+    try {
+      const nextSettings: Settings = {
+        ...state.settings,
+        weixin: {
+          ...state.settings.weixin,
+          base_url: configDraft.base_url,
+          bot_type: configDraft.bot_type,
+          route_tag: configDraft.route_tag,
+        },
+      }
+      await persistSettings(nextSettings)
+      setPendingRuleIDs(configDraft.rule_ids)
+      const data = await apiJSON<{ qr_code_url: string; session_key: string }>('/api/login/start', { method: 'POST' })
+      setQrURL(`/api/login/qr?content=${encodeURIComponent(data.qr_code_url)}`)
+      setLoginSession(data.session_key)
+      setConfigStep(3)
+      setStatusKind('info')
+      setStatusMessage('请扫码完成微信配置绑定')
+    } catch (error) {
+      setStatusKind('error')
+      setStatusMessage(getErrorMessage(error))
     }
-    await persistSettings(nextSettings)
-    setPendingRuleIDs(configDraft.rule_ids)
-    const resp = await fetch('/api/login/start', { method: 'POST' })
-    const data = await resp.json()
-    setQrURL(`/api/login/qr?content=${encodeURIComponent(data.qr_code_url)}`)
-    setLoginSession(data.session_key as string)
-    setConfigStep(3)
-    setStatusMessage('请扫码完成微信配置绑定')
   }
 
   const setAccountOnline = async (accountID: string) => {
-    const nextSettings = { ...state.settings, active_account_id: accountID }
-    await persistSettings(nextSettings)
-    await fetch(`/api/runtime/start?account_id=${encodeURIComponent(accountID)}`, { method: 'POST' })
-    await loadState()
-    setStatusMessage('微信配置已上线')
+    try {
+      const nextSettings = { ...state.settings, active_account_id: accountID }
+      await persistSettings(nextSettings)
+      await apiJSON(`/api/runtime/start?account_id=${encodeURIComponent(accountID)}`, { method: 'POST' })
+      await loadState()
+      setStatusKind('success')
+      setStatusMessage('微信配置已上线')
+    } catch (error) {
+      setStatusKind('error')
+      setStatusMessage(getErrorMessage(error))
+    }
   }
 
   const setAccountOffline = async (accountID: string) => {
-    await fetch(`/api/runtime/stop?account_id=${encodeURIComponent(accountID)}`, { method: 'POST' })
-    await loadState()
-    setStatusMessage('微信配置已下线')
+    try {
+      await apiJSON(`/api/runtime/stop?account_id=${encodeURIComponent(accountID)}`, { method: 'POST' })
+      await loadState()
+      setStatusKind('success')
+      setStatusMessage('微信配置已下线')
+    } catch (error) {
+      setStatusKind('error')
+      setStatusMessage(getErrorMessage(error))
+    }
   }
 
   const toggleConfigRule = (ruleID: string, checked: boolean) => {
@@ -419,6 +453,7 @@ function App() {
       </aside>
 
       <main className='main clean-main'>
+        {statusMessage && statusMessage !== 'Ready' ? <div className={`page-status ${statusKind}`}>{statusMessage}</div> : null}
         {currentView === 'rules' ? (
           <section className='list-page'>
             <div className='list-toolbar'>
@@ -571,27 +606,48 @@ function App() {
                 </Field>
               </div>
 
-              <div className='editor-grid top-gap'>
-                <div>
+              <EditorTabs
+                tabs={[
+                  { id: 'headers', label: 'Headers JSON' },
+                  { id: 'query', label: 'Query JSON' },
+                  { id: 'body', label: 'Body Template' },
+                  { id: 'response', label: 'Response Template' },
+                ]}
+                current={ruleEditorTab}
+                onChange={(tab) => setRuleEditorTab(tab as RuleEditorTab)}
+              />
+
+              {ruleEditorTab === 'headers' ? (
+                <div className='single-editor top-gap'>
                   <SectionLabel title='Headers JSON' />
                   <CodeEditor value={ruleJsonDrafts.headers} language='json' onChange={(value) => setRuleJsonDrafts((draft) => ({ ...draft, headers: value }))} />
+                  <CardHint text='这里填写 HTTP 请求头 JSON。常见示例：Authorization、Content-Type、自定义业务 Header。' />
                 </div>
-                <div>
+              ) : null}
+
+              {ruleEditorTab === 'query' ? (
+                <div className='single-editor top-gap'>
                   <SectionLabel title='Query JSON' />
                   <CodeEditor value={ruleJsonDrafts.query} language='json' onChange={(value) => setRuleJsonDrafts((draft) => ({ ...draft, query: value }))} />
+                  <CardHint text='这里填写 URL Query 参数 JSON。它会自动拼到请求地址后面。' />
                 </div>
-              </div>
+              ) : null}
 
-              <div className='editor-grid top-gap'>
-                <div>
+              {ruleEditorTab === 'body' ? (
+                <div className='single-editor top-gap'>
                   <SectionLabel title='Body Template' />
                   <CodeEditor value={ruleDraft.target.body_template} language='json' onChange={(value) => setRuleDraft((draft) => ({ ...draft, target: { ...draft.target, body_template: value } }))} />
+                  <CardHint text='这里定义发给上游 API 的请求体模板。可以使用消息、账号、时间等变量。' />
                 </div>
-                <div>
+              ) : null}
+
+              {ruleEditorTab === 'response' ? (
+                <div className='single-editor top-gap'>
                   <SectionLabel title='Response Template' />
                   <CodeEditor value={ruleDraft.response.template} language='handlebars' onChange={(value) => setRuleDraft((draft) => ({ ...draft, response: { ...draft.response, template: value } }))} />
+                  <CardHint text='这里决定最终回给微信什么文本。建议只提取上游响应里你真正想让用户看到的字段。' />
                 </div>
-              </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -791,6 +847,26 @@ function StepTabs({
   )
 }
 
+function EditorTabs({
+  tabs,
+  current,
+  onChange,
+}: {
+  tabs: Array<{ id: string; label: string }>
+  current: string
+  onChange: (tab: string) => void
+}) {
+  return (
+    <div className='editor-tabs'>
+      {tabs.map((tab) => (
+        <button key={tab.id} className={`editor-tab ${current === tab.id ? 'active' : ''}`} onClick={() => onChange(tab.id)}>
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function Field({ label, full, children }: { label: React.ReactNode; full?: boolean; children: React.ReactNode }) {
   return (
     <label className={full ? 'field full' : 'field'}>
@@ -864,6 +940,22 @@ function CodeEditor({
       />
     </div>
   )
+}
+
+async function apiJSON<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
+  const resp = await fetch(input, init)
+  const data = (await resp.json().catch(() => ({}))) as T & { error?: string }
+  if (!resp.ok || ('error' in data && typeof data.error === 'string' && data.error)) {
+    throw new Error(data.error || `request failed: ${resp.status}`)
+  }
+  return data
+}
+
+function getErrorMessage(error: unknown, fallback = '操作失败') {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message
+  }
+  return fallback
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

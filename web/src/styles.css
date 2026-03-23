@@ -107,6 +107,28 @@ textarea {
   padding: 24px;
 }
 
+.page-status {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 0.88rem;
+}
+
+.page-status.info {
+  background: #f3f4f6;
+  color: #4b5563;
+}
+
+.page-status.success {
+  background: rgba(22, 163, 74, 0.1);
+  color: rgb(21, 128, 61);
+}
+
+.page-status.error {
+  background: rgba(220, 38, 38, 0.08);
+  color: rgb(185, 28, 28);
+}
+
 .list-page {
   max-width: 1180px;
 }
@@ -278,8 +300,6 @@ textarea {
 
 .modal-shell {
   width: min(1120px, 100%);
-  max-height: calc(100vh - 48px);
-  overflow: auto;
   border: 1px solid var(--border);
   border-radius: 16px;
   background: white;
@@ -327,6 +347,28 @@ textarea {
   border-color: #111827;
 }
 
+.editor-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.editor-tab {
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: white;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.editor-tab.active {
+  color: #111827;
+  background: var(--muted);
+  border-color: #d1d5db;
+}
+
 .modal-section {
   display: grid;
   gap: 14px;
@@ -367,6 +409,11 @@ textarea {
   border: 1px solid var(--border);
   border-radius: 10px;
   overflow: hidden;
+}
+
+.single-editor {
+  display: grid;
+  gap: 10px;
 }
 
 .top-gap {
