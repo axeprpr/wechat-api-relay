@@ -46,7 +46,7 @@
 - 支持 URL / Header / Query / Body 模板
 - 支持 Response 模板，把上游返回映射成微信文本
 - 支持本地 Web 管理台
-- 支持打包为 `deb`、`rpm`、`tar.gz`
+- 支持发布 Go 原始编译产物、`deb`、`rpm`、`tar.gz`
 - 支持 GitHub Actions 自动构建与发布
 
 ## 项目结构
@@ -61,6 +61,45 @@
 ├── packaging/        # deb/rpm 打包配置与 systemd 服务
 ├── docs/             # 中英文部署文档
 └── .github/workflows # CI / Release
+```
+
+## 两种使用方式
+
+这个项目有两种典型使用方式：
+
+### 方式一：直接运行 Go 编译产物
+
+适合：
+
+- 临时测试
+- 单机部署
+- 手动控制进程
+
+你可以直接下载发布页里的原始可执行文件，然后运行：
+
+```bash
+chmod +x ./wechat-api-relay_linux_amd64
+./wechat-api-relay_linux_amd64 serve --addr 0.0.0.0:3222
+```
+
+然后访问：
+
+```text
+http://127.0.0.1:3222/
+```
+
+### 方式二：安装 deb/rpm 作为系统服务
+
+适合：
+
+- 长期运行
+- 服务器部署
+- 需要 `systemd` 托管
+
+安装后可直接启服务：
+
+```bash
+sudo systemctl enable --now wechat-api-relay
 ```
 
 ## 快速开始
@@ -198,10 +237,34 @@ make package VERSION=0.1.0
 - `dist/packages/*.rpm`
 - `dist/packages/*linux_amd64.tar.gz`
 
+## Release 页面包含什么
+
+发布页会包含以下几类产物：
+
+1. Go 原始编译产物  
+   例如：
+   `wechat-api-relay_0.1.3_linux_amd64`
+
+   适合直接：
+
+   ```bash
+   chmod +x ./wechat-api-relay_0.1.3_linux_amd64
+   ./wechat-api-relay_0.1.3_linux_amd64 serve --addr 0.0.0.0:3222
+   ```
+
+2. `deb` 安装包  
+   适合 Debian / Ubuntu，安装后通过 `systemd` 启服务。
+
+3. `rpm` 安装包  
+   适合 CentOS / Rocky / Fedora / RHEL，安装后通过 `systemd` 启服务。
+
+4. `tar.gz` 打包归档  
+   适合自己解压、手动部署。
+
 ## CI / Release
 
 - `CI`: push / PR 时构建 Go 后端和前端
-- `Release`: tag `v*` 或手动触发时构建并上传 `deb`、`rpm`、`tar.gz`
+- `Release`: tag `v*` 或手动触发时构建并上传 Go 原始编译产物、`deb`、`rpm`、`tar.gz`
 
 ## 部署文档
 

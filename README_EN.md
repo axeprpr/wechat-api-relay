@@ -20,8 +20,38 @@ The admin UI is rebuilt in the visual direction of `shadcn-admin` and focuses on
 - URL / Header / Query / Body templating
 - Response templating for WeChat replies
 - Local web admin UI
-- `deb`, `rpm`, and `tar.gz` packaging
+- raw Go binary, `deb`, `rpm`, and `tar.gz` packaging
 - GitHub Actions CI and release pipelines
+
+## Two usage modes
+
+### 1. Run the raw compiled Go binary directly
+
+Suitable for:
+
+- quick testing
+- manual deployment
+- single-node setups
+
+Example:
+
+```bash
+chmod +x ./wechat-api-relay_linux_amd64
+./wechat-api-relay_linux_amd64 serve --addr 0.0.0.0:3222
+```
+
+### 2. Install deb/rpm and run it as a service
+
+Suitable for:
+
+- long-running servers
+- systemd-managed deployments
+
+Example:
+
+```bash
+sudo systemctl enable --now wechat-api-relay
+```
 
 ## Build
 
@@ -85,6 +115,15 @@ Artifacts:
 - `dist/wechat-api-relay` raw Linux binary
 - `dist/packages/*.deb`
 - `dist/packages/*.rpm`
+
+## Release assets
+
+Each release is expected to contain:
+
+1. Raw compiled Go binary
+2. `deb` package
+3. `rpm` package
+4. `tar.gz` archive
 
 ## Deployment docs
 
