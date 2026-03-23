@@ -406,18 +406,18 @@ function App() {
         <div className='view-shell'>
           {currentView === 'weixin' && (
             <section className='view-grid single'>
-              <Card title='微信配置' description='这部分只管接微信，不碰你的业务 API。' titleHint='这里配置的是 OpenClaw 微信接口本身，不是你要转发的目标 API。通常先保持默认，能扫上微信之后再调细节。' action={<button className='button secondary' onClick={startLogin}><QrCode size={16} />开始扫码</button>}>
+              <Card title='微信配置' description='这部分只管接微信，不碰你的业务 API。' titleHint='这里配置的是 OpenClaw 微信接口本身，不是你要转发的目标 API。通常先保持默认，能扫上微信之后再调细节。最常见错误是把自己的业务 API 地址填到这里。' action={<button className='button secondary' onClick={startLogin}><QrCode size={16} />开始扫码</button>}>
                 <div className='form-grid'>
-                  <Field label={<LabelWithHint label='Weixin Base URL' hint='OpenClaw 微信接口的服务地址。默认就是官方接口地址，除非你明确换了上游网关，否则不要改。' />}>
+                  <Field label={<LabelWithHint label='Weixin Base URL' hint='OpenClaw 微信接口的服务地址。默认就是官方接口地址，除非你明确换了上游网关，否则不要改。示例：`https://ilinkai.weixin.qq.com`。常见错误：填成你自己的业务 API 地址，导致扫码和收消息都失败。' />}>
                     <input value={state.settings.weixin.base_url} onChange={(e) => updateSettings({ ...state.settings, weixin: { ...state.settings.weixin, base_url: e.target.value } })} />
                   </Field>
-                  <Field label={<LabelWithHint label='Bot Type' hint='二维码登录时带给微信接口的 bot_type。大多数场景保持默认即可，乱改可能导致登录流程不兼容。' />}>
+                  <Field label={<LabelWithHint label='Bot Type' hint='二维码登录时带给微信接口的 bot_type。大多数场景保持默认即可，乱改可能导致登录流程不兼容。示例：`3`。常见错误：照着别的项目随手改成其他值。' />}>
                     <input value={state.settings.weixin.bot_type} onChange={(e) => updateSettings({ ...state.settings, weixin: { ...state.settings.weixin, bot_type: e.target.value } })} />
                   </Field>
-                  <Field label={<LabelWithHint label='Route Tag' hint='可选路由标签。只有你的上游接口明确要求 SKRouteTag 时才填，不知道就留空。' />}>
+                  <Field label={<LabelWithHint label='Route Tag' hint='可选路由标签。只有你的上游接口明确要求 SKRouteTag 时才填，不知道就留空。示例：`gray-a`。常见错误：把它当作业务路由规则来用，实际上这里只影响微信接口侧路由。' />}>
                     <input value={state.settings.weixin.route_tag} onChange={(e) => updateSettings({ ...state.settings, weixin: { ...state.settings.weixin, route_tag: e.target.value } })} />
                   </Field>
-                  <Field label={<LabelWithHint label='Active Account' hint='当前运行中的微信账号。启动 Relay 时会使用这个账号去收消息和发消息。' />}>
+                  <Field label={<LabelWithHint label='Active Account' hint='当前运行中的微信账号。启动 Relay 时会使用这个账号去收消息和发消息。常见错误：已经扫码了，但没切换到正确账号就直接点启动。' />}>
                     <select value={state.settings.active_account_id} onChange={(e) => updateSettings({ ...state.settings, active_account_id: e.target.value })}>
                       <option value=''>选择一个账号</option>
                       {state.accounts.map((account) => (
@@ -449,9 +449,9 @@ function App() {
 
           {currentView === 'bindings' && (
             <section className='view-grid single'>
-              <Card title='账号绑定规则' description='一个微信账号可以绑定多条规则，不同账号也可以绑定不同规则。' titleHint='这是这套系统最关键的路由关系。收到某个账号的消息时，只会在这个账号已绑定的规则里继续匹配。'>
+              <Card title='账号绑定规则' description='一个微信账号可以绑定多条规则，不同账号也可以绑定不同规则。' titleHint='这是这套系统最关键的路由关系。收到某个账号的消息时，只会在这个账号已绑定的规则里继续匹配。常见错误是只创建了规则，却忘了绑定账号，结果消息完全不命中。'>
                 <div className='form-grid'>
-                  <Field label={<LabelWithHint label='选择微信账号' hint='先选一个微信账号，下面的勾选框才表示“这个账号可以使用哪些规则”。' />} full>
+                  <Field label={<LabelWithHint label='选择微信账号' hint='先选一个微信账号，下面的勾选框才表示“这个账号可以使用哪些规则”。示例：账号 A 绑定订单查询和售后规则，账号 B 绑定知识库问答规则。' />} full>
                     <select value={selectedBindingAccountId} onChange={(e) => setBindingAccountId(e.target.value)}>
                       <option value=''>选择一个账号</option>
                       {state.accounts.map((account) => (
@@ -481,7 +481,7 @@ function App() {
 
           {currentView === 'rules' && (
             <section className='view-grid single'>
-              <Card title='规则表' description='这里是规则总表。先建规则，再绑定到具体微信账号。' titleHint='规则负责定义“什么消息会命中”“命中后请求哪个 API”“如何把响应回给微信”。是否实际生效，还要看账号绑定关系。' action={<button className='button secondary' onClick={addRule}><Plus size={16} />新建规则</button>}>
+              <Card title='规则表' description='这里是规则总表。先建规则，再绑定到具体微信账号。' titleHint='规则负责定义“什么消息会命中”“命中后请求哪个 API”“如何把响应回给微信”。是否实际生效，还要看账号绑定关系。建议优先按业务能力拆规则，而不是按技术接口名拆规则。' action={<button className='button secondary' onClick={addRule}><Plus size={16} />新建规则</button>}>
                 <div className='table-toolbar'>
                   <input className='toolbar-search' placeholder='搜索规则名称、ID、URL 或匹配词' value={ruleSearch} onChange={(e) => setRuleSearch(e.target.value)} />
                   <select value={ruleFilter} onChange={(e) => setRuleFilter(e.target.value as 'all' | 'enabled' | 'disabled')}>
@@ -533,17 +533,17 @@ function App() {
               <section className='column'>
                 {selectedRule ? (
                   <>
-                    <Card title='规则基本信息' description='规则本身只定义如何匹配与如何请求。它是否生效，由账号绑定关系决定。' titleHint='先把这部分想成“路由规则”。先匹配，再请求上游，最后把响应套进回复模板。' action={<button className='button danger' onClick={removeRule}><Trash2 size={16} />删除规则</button>}>
+                    <Card title='规则基本信息' description='规则本身只定义如何匹配与如何请求。它是否生效，由账号绑定关系决定。' titleHint='先把这部分想成“路由规则”。先匹配，再请求上游，最后把响应套进回复模板。最常见的设计失误是第一条规则就用 all，导致后面的规则永远匹配不到。' action={<button className='button danger' onClick={removeRule}><Trash2 size={16} />删除规则</button>}>
                       <div className='form-grid'>
-                        <Field label={<LabelWithHint label='Rule ID' hint='规则的稳定标识。绑定关系和后续配置会引用它，已经上线后不要频繁改。' />}><input value={selectedRule.id} onChange={(e) => updateRule({ id: e.target.value })} /></Field>
-                        <Field label={<LabelWithHint label='Rule Name' hint='给人看的名称。尽量写得像“订单查询”“客服转人工”这种用途名，而不是技术名。' />}><input value={selectedRule.name} onChange={(e) => updateRule({ name: e.target.value })} /></Field>
-                        <Field label={<LabelWithHint label='Enabled' hint='规则总开关。这里关掉后，即使账号仍然绑定了它，也不会再命中。' />}>
+                        <Field label={<LabelWithHint label='Rule ID' hint='规则的稳定标识。绑定关系和后续配置会引用它，已经上线后不要频繁改。示例：`order-query`、`kb-chat`。常见错误：用中文、空格或临时名字，后面维护很乱。' />}><input value={selectedRule.id} onChange={(e) => updateRule({ id: e.target.value })} /></Field>
+                        <Field label={<LabelWithHint label='Rule Name' hint='给人看的名称。尽量写得像“订单查询”“客服转人工”这种用途名，而不是技术名。示例：`售后工单查询`。' />}><input value={selectedRule.name} onChange={(e) => updateRule({ name: e.target.value })} /></Field>
+                        <Field label={<LabelWithHint label='Enabled' hint='规则总开关。这里关掉后，即使账号仍然绑定了它，也不会再命中。常见错误：以为勾选了账号绑定就一定生效，但规则本身可能仍是停用。' />}>
                           <select value={String(selectedRule.enabled)} onChange={(e) => updateRule({ enabled: e.target.value === 'true' })}>
                             <option value='true'>启用</option>
                             <option value='false'>停用</option>
                           </select>
                         </Field>
-                        <Field label={<LabelWithHint label='Match Mode' hint='决定如何判断用户消息是否命中这条规则。all 表示任何消息都命中，prefix 适合命令式消息，regex 适合复杂匹配。' />}>
+                        <Field label={<LabelWithHint label='Match Mode' hint='决定如何判断用户消息是否命中这条规则。all 表示任何消息都命中，prefix 适合命令式消息，regex 适合复杂匹配。示例：客服命令常用 prefix，自然语言关键词常用 contains。' />}>
                           <select value={selectedRule.match.mode} onChange={(e) => updateRuleNested('match', { ...selectedRule.match, mode: e.target.value })}>
                             <option value='all'>all</option>
                             <option value='prefix'>prefix</option>
@@ -552,7 +552,7 @@ function App() {
                             <option value='regex'>regex</option>
                           </select>
                         </Field>
-                        <Field label={<LabelWithHint label='Match Pattern' hint='匹配词本体。比如 prefix 模式下填 /help，regex 模式下填正则表达式。all 模式可以留空。' />} full>
+                        <Field label={<LabelWithHint label='Match Pattern' hint='匹配词本体。比如 prefix 模式下填 `/help`，contains 模式下填 `退款`，regex 模式下填正则表达式。all 模式可以留空。常见错误：用了 prefix 却没带前缀词，导致永远不命中。' />} full>
                           <input value={selectedRule.match.pattern} onChange={(e) => updateRuleNested('match', { ...selectedRule.match, pattern: e.target.value })} />
                         </Field>
                         <Field label={<LabelWithHint label='Description' hint='写给团队自己看的补充说明。建议记清楚这个规则要打哪个系统、回什么内容、有没有特殊限制。' />} full>
@@ -561,12 +561,12 @@ function App() {
                       </div>
                     </Card>
 
-                    <Card title='HTTP 请求' description='URL / Method / Timeout 这些是请求骨架。' titleHint='这里定义的是转发到你自己 API 的方式。URL、Method、Header、Body 都支持模板变量，不是死字符串。'>
+                    <Card title='HTTP 请求' description='URL / Method / Timeout 这些是请求骨架。' titleHint='这里定义的是转发到你自己 API 的方式。URL、Method、Header、Body 都支持模板变量，不是死字符串。最常见错误是 URL 对了，但 Header 或 Body 没按上游接口要求写。'>
                       <div className='form-grid'>
-                        <Field label={<LabelWithHint label='Method' hint='上游 API 的 HTTP 方法，常见是 GET 或 POST。建议直接按你的接口文档填写大写值。' />}><input value={selectedRule.target.method} onChange={(e) => updateRuleNested('target', { ...selectedRule.target, method: e.target.value })} /></Field>
-                        <Field label={<LabelWithHint label='Timeout (ms)' hint='请求上游 API 的超时时间，单位毫秒。超时太短容易误判失败，太长会拖慢微信回复。' />}><input type='number' value={selectedRule.target.timeout_ms} onChange={(e) => updateRuleNested('target', { ...selectedRule.target, timeout_ms: Number(e.target.value) })} /></Field>
-                        <Field label={<LabelWithHint label='URL Template' hint='目标 API 地址。支持模板变量，比如把用户消息里的内容拼进 URL、Query 或路径。' />} full><input value={selectedRule.target.url_template} onChange={(e) => updateRuleNested('target', { ...selectedRule.target, url_template: e.target.value })} /></Field>
-                        <Field label={<LabelWithHint label='Skip TLS Verify' hint='跳过 HTTPS 证书校验。只建议在内网自签名证书调试时打开，正式环境尽量保持 false。' />}>
+                        <Field label={<LabelWithHint label='Method' hint='上游 API 的 HTTP 方法，常见是 GET 或 POST。建议直接按你的接口文档填写大写值。常见错误：后端要求 POST，但这里写成 GET。' />}><input value={selectedRule.target.method} onChange={(e) => updateRuleNested('target', { ...selectedRule.target, method: e.target.value })} /></Field>
+                        <Field label={<LabelWithHint label='Timeout (ms)' hint='请求上游 API 的超时时间，单位毫秒。超时太短容易误判失败，太长会拖慢微信回复。示例：`5000` 或 `15000`。' />}><input type='number' value={selectedRule.target.timeout_ms} onChange={(e) => updateRuleNested('target', { ...selectedRule.target, timeout_ms: Number(e.target.value) })} /></Field>
+                        <Field label={<LabelWithHint label='URL Template' hint='目标 API 地址。支持模板变量，比如把用户消息里的内容拼进 URL、Query 或路径。示例：`https://api.example.com/v1/query`。常见错误：少写协议头、路径拼错、把 query 写进 body。' />} full><input value={selectedRule.target.url_template} onChange={(e) => updateRuleNested('target', { ...selectedRule.target, url_template: e.target.value })} /></Field>
+                        <Field label={<LabelWithHint label='Skip TLS Verify' hint='跳过 HTTPS 证书校验。只建议在内网自签名证书调试时打开，正式环境尽量保持 false。常见错误：线上为了省事长期打开。' />}>
                           <select value={String(selectedRule.target.insecure_skip_tls)} onChange={(e) => updateRuleNested('target', { ...selectedRule.target, insecure_skip_tls: e.target.value === 'true' })}>
                             <option value='false'>false</option>
                             <option value='true'>true</option>
@@ -585,7 +585,7 @@ function App() {
               <section className='column'>
                 {selectedRule ? (
                   <>
-                    <Card title='Headers / Query' description='用 VS Code 风格编辑器编辑 JSON，失焦时应用。' titleHint='Headers 会变成 HTTP 请求头，Query 会拼到 URL 参数里。值也支持模板变量。这里要求是标准 JSON 对象。'>
+                    <Card title='Headers / Query' description='用 VS Code 风格编辑器编辑 JSON，失焦时应用。' titleHint='Headers 会变成 HTTP 请求头，Query 会拼到 URL 参数里。值也支持模板变量。这里要求是标准 JSON 对象。最常见错误是漏了双引号、末尾多逗号，导致 JSON 解析失败。'>
                       <div className='editor-grid'>
                         <div>
                           <SectionLabel title='Headers JSON' />
@@ -598,7 +598,7 @@ function App() {
                       </div>
                     </Card>
 
-                    <Card title='Body / Response Template' description='左边发上游，右边决定回微信什么。' titleHint='Body Template 是发给你 API 的请求体；Response Template 是收到 API 响应后，最终发回微信的文本模板。'>
+                    <Card title='Body / Response Template' description='左边发上游，右边决定回微信什么。' titleHint='Body Template 是发给你 API 的请求体；Response Template 是收到 API 响应后，最终发回微信的文本模板。最常见错误是上游返回 JSON，但回复模板仍只写 `.Response.body`，导致回给微信的是整段原始 JSON。'>
                       <div className='editor-grid'>
                         <div>
                           <SectionLabel title='Body Template' />
@@ -631,13 +631,13 @@ function App() {
                       </div>
                     </Card>
 
-                    <Card title='模板上下文' description='这是当前规则可用的模板变量。' titleHint='这些变量可以在 URL、Header、Body、Response Template 里使用。写模板时先看这里，别自己猜字段名。'>
+                    <Card title='模板上下文' description='这是当前规则可用的模板变量。' titleHint='这些变量可以在 URL、Header、Body、Response Template 里使用。写模板时先看这里，别自己猜字段名。示例：`{{ .Message.text }}`、`{{ .Response.json.answer }}`。'>
                       <CodePreview />
                     </Card>
 
-                    <Card title='规则调试' description='用一个样例消息实际请求上游，直接看渲染后的请求与最终回微信文本。' titleHint='这是实际调试，不是静态预览。点击后会真的请求你的上游 API，所以建议先用测试环境地址和测试数据。' action={<button className='button primary' onClick={runPreview} disabled={previewLoading || !selectedPreviewAccountId}><CirclePlay size={16} />{previewLoading ? '调试中…' : '运行调试'}</button>}>
+                    <Card title='规则调试' description='用一个样例消息实际请求上游，直接看渲染后的请求与最终回微信文本。' titleHint='这是实际调试，不是静态预览。点击后会真的请求你的上游 API，所以建议先用测试环境地址和测试数据。常见排查顺序：先看 request body，再看 response body，最后看 rendered reply。' action={<button className='button primary' onClick={runPreview} disabled={previewLoading || !selectedPreviewAccountId}><CirclePlay size={16} />{previewLoading ? '调试中…' : '运行调试'}</button>}>
                       <div className='form-grid'>
-                        <Field label={<LabelWithHint label='调试账号' hint='决定本次调试使用哪个微信账号的上下文信息，例如账号 ID、用户 ID、绑定关系。' />}>
+                        <Field label={<LabelWithHint label='调试账号' hint='决定本次调试使用哪个微信账号的上下文信息，例如账号 ID、用户 ID、绑定关系。常见错误：规则明明只绑定在账号 A，却拿账号 B 来调试。' />}>
                           <select value={selectedPreviewAccountId} onChange={(e) => setPreviewAccountId(e.target.value)}>
                             <option value=''>选择一个账号</option>
                             {state.accounts.map((account) => (
@@ -645,10 +645,10 @@ function App() {
                             ))}
                           </select>
                         </Field>
-                        <Field label={<LabelWithHint label='发送方 User ID' hint='模拟消息发送者。你可以把它理解成“是谁给这个微信发了这条消息”。需要做会话隔离时，这个值很重要。' />}>
+                        <Field label={<LabelWithHint label='发送方 User ID' hint='模拟消息发送者。你可以把它理解成“是谁给这个微信发了这条消息”。需要做会话隔离时，这个值很重要。示例：`user-1001@im.wechat`。' />}>
                           <input value={previewUserId} onChange={(e) => setPreviewUserId(e.target.value)} />
                         </Field>
-                        <Field label={<LabelWithHint label='样例消息' hint='模拟用户真正发到微信里的文本内容。规则匹配、模板渲染、上游请求体都会用到它。' />} full>
+                        <Field label={<LabelWithHint label='样例消息' hint='模拟用户真正发到微信里的文本内容。规则匹配、模板渲染、上游请求体都会用到它。示例：`查询订单 12345`、`帮我总结今天的日报`。' />} full>
                           <textarea value={previewText} onChange={(e) => setPreviewText(e.target.value)} />
                         </Field>
                       </div>
