@@ -67,6 +67,7 @@ type Account = {
 type RuntimeState = {
   running: boolean
   account_id: string
+  running_account_ids: string[]
 }
 
 type PreviewResult = {
@@ -375,13 +376,13 @@ function App() {
   const setAccountOnline = async (accountID: string) => {
     const nextSettings = { ...state.settings, active_account_id: accountID }
     await persistSettings(nextSettings)
-    await fetch('/api/runtime/start', { method: 'POST' })
+    await fetch(`/api/runtime/start?account_id=${encodeURIComponent(accountID)}`, { method: 'POST' })
     await loadState()
     setStatusMessage('微信配置已上线')
   }
 
-  const setAccountOffline = async () => {
-    await fetch('/api/runtime/stop', { method: 'POST' })
+  const setAccountOffline = async (accountID: string) => {
+    await fetch(`/api/runtime/stop?account_id=${encodeURIComponent(accountID)}`, { method: 'POST' })
     await loadState()
     setStatusMessage('微信配置已下线')
   }
@@ -477,7 +478,7 @@ function App() {
                 <span>操作</span>
               </div>
               {state.accounts.map((account) => {
-                const isOnline = state.runtime.running && state.runtime.account_id === account.id
+                const isOnline = (state.runtime.running_account_ids ?? []).includes(account.id)
                 const boundRules = state.settings.account_rules[account.id] ?? []
                 return (
                   <div key={account.id} className='list-row config-grid'>
@@ -490,7 +491,7 @@ function App() {
                     <div className='row-actions'>
                       <button className='button secondary' onClick={() => openEditConfig(account)}>编辑</button>
                       {isOnline ? (
-                        <button className='button ghost-danger' onClick={() => void setAccountOffline()}>下线</button>
+                        <button className='button ghost-danger' onClick={() => void setAccountOffline(account.id)}>下线</button>
                       ) : (
                         <button className='button primary' onClick={() => void setAccountOnline(account.id)}>上线</button>
                       )}

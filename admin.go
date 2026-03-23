@@ -26,7 +26,7 @@ type AdminServer struct {
 	store  *store.Store
 	mux    *http.ServeMux
 	server *http.Server
-	run    *RelayRunner
+	run    *RelayManager
 }
 
 type RelayRunner struct {
@@ -40,8 +40,16 @@ type RelayRunner struct {
 }
 
 type runtimeState struct {
-	Running   bool   `json:"running"`
-	AccountID string `json:"account_id"`
+	Running           bool     `json:"running"`
+	AccountID         string   `json:"account_id"`
+	RunningAccountIDs []string `json:"running_account_ids"`
+}
+
+type RelayManager struct {
+	cfg     config.Config
+	store   *store.Store
+	mu      sync.Mutex
+	runners map[string]*RelayRunner
 }
 
 func NewAdminServer(cfg config.Config, st *store.Store) *AdminServer {
@@ -49,9 +57,10 @@ func NewAdminServer(cfg config.Config, st *store.Store) *AdminServer {
 		cfg:   cfg,
 		store: st,
 		mux:   http.NewServeMux(),
-		run: &RelayRunner{
-			cfg:   cfg,
-			store: st,
+		run: &RelayManager{
+			cfg:     cfg,
+			store:   st,
+			runners: map[string]*RelayRunner{},
 		},
 	}
 	s.routes()
@@ -117,14 +126,14 @@ func (s *AdminServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if settings.Weixin.UserAgent == "" {
 			settings.Weixin.UserAgent = s.cfg.Weixin.UserAgent
 		}
-	if settings.Weixin.PollTimeout <= 0 {
-		settings.Weixin.PollTimeout = s.cfg.Weixin.PollTimeout
-	}
-	if settings.AccountRules == nil {
-		settings.AccountRules = map[string][]string{}
-	}
-	normalizeRules(&settings)
-	if err := s.store.SaveSettings(settings); err != nil {
+		if settings.Weixin.PollTimeout <= 0 {
+			settings.Weixin.PollTimeout = s.cfg.Weixin.PollTimeout
+		}
+		if settings.AccountRules == nil {
+			settings.AccountRules = map[string][]string{}
+		}
+		normalizeRules(&settings)
+		if err := s.store.SaveSettings(settings); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -282,12 +291,16 @@ func (s *AdminServer) handleRuntimeStart(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
 		return
 	}
-	settings, err := s.store.LoadSettings(s.cfg)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
+	accountID := strings.TrimSpace(r.URL.Query().Get("account_id"))
+	if accountID == "" {
+		settings, err := s.store.LoadSettings(s.cfg)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		accountID = settings.ActiveAccountID
 	}
-	account, err := s.store.LoadAccount(settings.ActiveAccountID)
+	account, err := s.store.LoadAccount(accountID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -304,7 +317,12 @@ func (s *AdminServer) handleRuntimeStop(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
 		return
 	}
-	s.run.Stop()
+	accountID := strings.TrimSpace(r.URL.Query().Get("account_id"))
+	if accountID == "" {
+		s.run.StopAll()
+	} else {
+		s.run.Stop(accountID)
+	}
 	writeJSON(w, http.StatusOK, s.run.State())
 }
 
@@ -363,15 +381,28 @@ func (s *AdminServer) loadState() (store.Settings, []store.Account, runtimeState
 	return settings, accounts, s.run.State(), nil
 }
 
-func (r *RelayRunner) Start(account store.Account) error {
+func (m *RelayManager) Start(account store.Account) error {
+	m.mu.Lock()
+	if runner, ok := m.runners[account.ID]; ok {
+		m.mu.Unlock()
+		if runner.IsRunning() {
+			return fmt.Errorf("relay already running for %s", account.ID)
+		}
+	} else {
+		m.runners[account.ID] = &RelayRunner{cfg: m.cfg, store: m.store}
+		m.mu.Unlock()
+	}
+	m.mu.Lock()
+	r := m.runners[account.ID]
+	m.mu.Unlock()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
 	if r.running {
-		return fmt.Errorf("relay already running for %s", r.accountID)
+		return fmt.Errorf("relay already running for %s", account.ID)
 	}
 	settingsLoader := func() (store.Settings, error) {
-		return r.store.LoadSettings(r.cfg)
+		return m.store.LoadSettings(m.cfg)
 	}
 	settings, err := settingsLoader()
 	if err != nil {
@@ -392,9 +423,9 @@ func (r *RelayRunner) Start(account store.Account) error {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	engine := relay.NewEngine(r.store, settingsLoader)
+	engine := relay.NewEngine(m.store, settingsLoader)
 	client := weixin.NewClient(settings.Weixin)
-	poller := weixin.NewPoller(client, r.store, engine)
+	poller := weixin.NewPoller(client, m.store, engine)
 
 	r.cancel = cancel
 	r.running = true
@@ -402,17 +433,34 @@ func (r *RelayRunner) Start(account store.Account) error {
 
 	go func() {
 		defer func() {
-			r.mu.Lock()
-			r.running = false
-			r.accountID = ""
-			r.cancel = nil
-			r.mu.Unlock()
+			r.reset()
 		}()
 		if err := poller.Run(ctx, account); err != nil && err != context.Canceled {
 			log.Printf("relay stopped with error: %v", err)
 		}
 	}()
 	return nil
+}
+
+func (m *RelayManager) Stop(accountID string) {
+	m.mu.Lock()
+	runner := m.runners[accountID]
+	m.mu.Unlock()
+	if runner != nil {
+		runner.Stop()
+	}
+}
+
+func (m *RelayManager) StopAll() {
+	m.mu.Lock()
+	runners := make([]*RelayRunner, 0, len(m.runners))
+	for _, runner := range m.runners {
+		runners = append(runners, runner)
+	}
+	m.mu.Unlock()
+	for _, runner := range runners {
+		runner.Stop()
+	}
 }
 
 func (r *RelayRunner) Stop() {
@@ -423,10 +471,35 @@ func (r *RelayRunner) Stop() {
 	}
 }
 
-func (r *RelayRunner) State() runtimeState {
+func (m *RelayManager) State() runtimeState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	runningIDs := make([]string, 0, len(m.runners))
+	for accountID, runner := range m.runners {
+		if runner.IsRunning() {
+			runningIDs = append(runningIDs, accountID)
+		}
+	}
+	state := runtimeState{RunningAccountIDs: runningIDs}
+	if len(runningIDs) > 0 {
+		state.Running = true
+		state.AccountID = runningIDs[0]
+	}
+	return state
+}
+
+func (r *RelayRunner) IsRunning() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return runtimeState{Running: r.running, AccountID: r.accountID}
+	return r.running
+}
+
+func (r *RelayRunner) reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.running = false
+	r.accountID = ""
+	r.cancel = nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
