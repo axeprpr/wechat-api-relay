@@ -1,16 +1,19 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
+import Editor from '@monaco-editor/react'
 import {
   Bot,
-  Cable,
+  CheckCircle2,
   CirclePlay,
   CircleStop,
+  Cable,
   Plus,
   QrCode,
   Save,
   Send,
   Settings2,
   Trash2,
+  UserRound,
 } from 'lucide-react'
 import './styles.css'
 
@@ -70,6 +73,11 @@ type AppState = {
   runtime: RuntimeState
 }
 
+type JsonDrafts = {
+  headers: string
+  query: string
+}
+
 const emptyRule = (): Rule => ({
   id: `rule-${Math.random().toString(36).slice(2, 8)}`,
   name: 'New Rule',
@@ -81,7 +89,7 @@ const emptyRule = (): Rule => ({
     url_template: '',
     headers: { 'Content-Type': 'application/json' },
     query: {},
-    body_template: '{"text":"{{ .Message.text }}","from":"{{ .Message.from }}"}',
+    body_template: '{\n  "text": "{{ .Message.text }}",\n  "from": "{{ .Message.from }}"\n}',
     timeout_ms: 60000,
     insecure_skip_tls: false,
   },
@@ -93,33 +101,45 @@ function App() {
   const [state, setState] = React.useState<AppState | null>(null)
   const [selectedRuleId, setSelectedRuleId] = React.useState<string>('')
   const [saving, setSaving] = React.useState(false)
-  const [message, setMessage] = React.useState<string>('')
+  const [statusMessage, setStatusMessage] = React.useState<string>('Ready')
   const [qrURL, setQrURL] = React.useState<string>('')
   const [loginSession, setLoginSession] = React.useState<string>('')
+  const [jsonDrafts, setJsonDrafts] = React.useState<JsonDrafts>({ headers: '{}', query: '{}' })
 
   const loadState = React.useCallback(async () => {
     const resp = await fetch('/api/state')
     const data = (await resp.json()) as AppState
     setState(data)
-    if (!selectedRuleId && data.settings.rules.length > 0) {
-      setSelectedRuleId(data.settings.rules[0].id)
-    }
-  }, [selectedRuleId])
+    const firstRule = data.settings.rules[0]
+    setSelectedRuleId((current) => current || firstRule?.id || '')
+  }, [])
 
   React.useEffect(() => {
     void loadState()
   }, [loadState])
+
+  const selectedRule =
+    state?.settings.rules.find((rule) => rule.id === selectedRuleId) ?? state?.settings.rules[0]
+
+  React.useEffect(() => {
+    if (!selectedRule) return
+    setJsonDrafts({
+      headers: JSON.stringify(selectedRule.target.headers ?? {}, null, 2),
+      query: JSON.stringify(selectedRule.target.query ?? {}, null, 2),
+    })
+  }, [selectedRule?.id])
 
   React.useEffect(() => {
     if (!loginSession) return
     const timer = window.setInterval(async () => {
       const resp = await fetch(`/api/login/status?session_key=${encodeURIComponent(loginSession)}`)
       const data = await resp.json()
-      setMessage(`登录状态: ${JSON.stringify(data)}`)
+      setStatusMessage(`登录状态：${data.status}`)
       if (data.status === 'confirmed') {
         window.clearInterval(timer)
         setLoginSession('')
         setQrURL('')
+        setStatusMessage('微信登录成功')
         await loadState()
       }
     }, 2500)
@@ -127,13 +147,21 @@ function App() {
   }, [loginSession, loadState])
 
   if (!state) {
-    return <div className="loading">Loading…</div>
+    return <div className='loading'>Loading…</div>
   }
 
-  const selectedRule = state.settings.rules.find((rule) => rule.id === selectedRuleId) ?? state.settings.rules[0]
+  const updateSettings = (next: Settings) => setState({ ...state, settings: next })
 
-  const updateSettings = (next: Settings) => {
-    setState({ ...state, settings: next })
+  const updateRule = (patch: Partial<Rule>) => {
+    if (!selectedRule) return
+    const rules = state.settings.rules.map((rule) =>
+      rule.id === selectedRule.id ? { ...rule, ...patch } : rule
+    )
+    updateSettings({ ...state.settings, rules })
+  }
+
+  const updateRuleNested = <K extends keyof Rule>(key: K, value: Rule[K]) => {
+    updateRule({ [key]: value } as Partial<Rule>)
   }
 
   const saveSettings = async () => {
@@ -146,7 +174,7 @@ function App() {
       })
       const data = await resp.json()
       setState({ ...state, settings: data })
-      setMessage('配置已保存')
+      setStatusMessage('配置已保存')
     } finally {
       setSaving(false)
     }
@@ -157,358 +185,469 @@ function App() {
     const data = await resp.json()
     setQrURL(`/api/login/qr?content=${encodeURIComponent(data.qr_code_url)}`)
     setLoginSession(data.session_key)
-    setMessage('请使用微信扫码登录')
+    setStatusMessage('请使用微信扫码登录')
   }
 
   const startRuntime = async () => {
     await fetch('/api/runtime/start', { method: 'POST' })
     await loadState()
-    setMessage('中继已启动')
+    setStatusMessage('中继已启动')
   }
 
   const stopRuntime = async () => {
     await fetch('/api/runtime/stop', { method: 'POST' })
     await loadState()
-    setMessage('中继已停止')
-  }
-
-  const updateRule = (patch: Partial<Rule>) => {
-    const rules = state.settings.rules.map((rule) =>
-      rule.id === selectedRule.id ? { ...rule, ...patch } : rule
-    )
-    updateSettings({ ...state.settings, rules })
-  }
-
-  const updateRuleNested = <K extends keyof Rule>(key: K, value: Rule[K]) => {
-    updateRule({ [key]: value } as Partial<Rule>)
+    setStatusMessage('中继已停止')
   }
 
   const addRule = () => {
-    const rule = emptyRule()
-    updateSettings({ ...state.settings, rules: [...state.settings.rules, rule] })
-    setSelectedRuleId(rule.id)
+    const next = emptyRule()
+    updateSettings({ ...state.settings, rules: [...state.settings.rules, next] })
+    setSelectedRuleId(next.id)
+    setStatusMessage('已新增规则')
   }
 
-  const removeRule = (ruleID: string) => {
-    const rules = state.settings.rules.filter((rule) => rule.id !== ruleID)
+  const removeRule = () => {
+    if (!selectedRule) return
+    const rules = state.settings.rules.filter((rule) => rule.id !== selectedRule.id)
     updateSettings({ ...state.settings, rules })
-    if (selectedRuleId === ruleID && rules.length > 0) {
-      setSelectedRuleId(rules[0].id)
+    setSelectedRuleId(rules[0]?.id ?? '')
+    setStatusMessage('已删除规则')
+  }
+
+  const applyJsonDraft = (kind: 'headers' | 'query') => {
+    if (!selectedRule) return
+    try {
+      const parsed = JSON.parse(jsonDrafts[kind]) as Record<string, string>
+      updateRuleNested('target', { ...selectedRule.target, [kind]: parsed })
+      setStatusMessage(`${kind} 已应用`)
+    } catch {
+      setStatusMessage(`${kind} JSON 格式错误，未保存`)
     }
   }
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-badge">
+    <div className='workspace'>
+      <aside className='sidebar'>
+        <div className='sidebar-brand'>
+          <div className='sidebar-logo'>
             <Bot size={18} />
           </div>
           <div>
-            <strong>wechat-api-relay</strong>
-            <p>Adapted from shadcn-admin shell</p>
+            <div className='sidebar-title'>wechat-api-relay</div>
+            <div className='sidebar-subtitle'>OpenClaw WeChat Hook</div>
           </div>
         </div>
 
-        <nav className="nav">
-          <button className="nav-item active">
-            <Cable size={16} /> Relay Console
-          </button>
-          <button className="nav-item" onClick={addRule}>
-            <Plus size={16} /> New Rule
-          </button>
-        </nav>
-
-        <div className="runtime-card">
-          <span className={`pill ${state.runtime.running ? 'live' : ''}`}>
-            {state.runtime.running ? 'Running' : 'Stopped'}
-          </span>
-          <p>{state.runtime.account_id || 'No active account'}</p>
-          <div className="runtime-actions">
-            <button onClick={startRuntime}><CirclePlay size={16} /> Start</button>
-            <button className="ghost" onClick={stopRuntime}><CircleStop size={16} /> Stop</button>
+        <div className='sidebar-card'>
+          <div className='sidebar-section-title'>状态</div>
+          <StatusBadge live={state.runtime.running}>
+            {state.runtime.running ? 'Relay Running' : 'Relay Stopped'}
+          </StatusBadge>
+          <div className='sidebar-meta'>
+            <div>
+              <span>活动账号</span>
+              <strong>{state.settings.active_account_id || '未选择'}</strong>
+            </div>
+            <div>
+              <span>规则数量</span>
+              <strong>{state.settings.rules.length}</strong>
+            </div>
           </div>
+        </div>
+
+        <div className='sidebar-card'>
+          <div className='sidebar-section-title'>步骤</div>
+          <ol className='steps'>
+            <li className='step current'>1. 配置微信通道</li>
+            <li className='step current'>2. 扫码并绑定账号</li>
+            <li className='step current'>3. 编辑转发规则</li>
+            <li className='step current'>4. 启动 Relay</li>
+          </ol>
         </div>
       </aside>
 
-      <main className="content">
-        <header className="hero">
+      <main className='main'>
+        <header className='page-header'>
           <div>
-            <p className="eyebrow">WeChat to Any HTTP API</p>
-            <h1>把微信消息路由到任意 API</h1>
-            <p className="hero-copy">
-              配置微信接入、扫码绑定账号、编排任意 HTTP 规则，并把响应回发到微信。
+            <h1>任意 API Relay 控制台</h1>
+            <p>
+              抄你 `llm-performence` 的信息结构重做：页面更克制，卡片层级更清楚，编辑流更直接。
             </p>
           </div>
-          <button className="primary" onClick={saveSettings} disabled={saving}>
-            <Save size={16} /> {saving ? 'Saving…' : 'Save All'}
+          <button className='button primary' onClick={saveSettings} disabled={saving}>
+            <Save size={16} />
+            {saving ? '保存中…' : '保存配置'}
           </button>
         </header>
 
-        <section className="dashboard-grid">
-          <article className="panel">
-            <div className="panel-header">
-              <div>
-                <h2><Settings2 size={18} /> 微信通道</h2>
-                <p>扫码登录、切换活动账号、调整长轮询网关参数。</p>
-              </div>
-              <button className="outline" onClick={startLogin}>
-                <QrCode size={16} /> Start Login
-              </button>
-            </div>
-
-            <div className="form-grid">
-              <Field label="Weixin Base URL">
-                <input
-                  value={state.settings.weixin.base_url}
-                  onChange={(e) =>
-                    updateSettings({
-                      ...state.settings,
-                      weixin: { ...state.settings.weixin, base_url: e.target.value },
-                    })
-                  }
-                />
-              </Field>
-              <Field label="Bot Type">
-                <input
-                  value={state.settings.weixin.bot_type}
-                  onChange={(e) =>
-                    updateSettings({
-                      ...state.settings,
-                      weixin: { ...state.settings.weixin, bot_type: e.target.value },
-                    })
-                  }
-                />
-              </Field>
-              <Field label="Route Tag">
-                <input
-                  value={state.settings.weixin.route_tag}
-                  onChange={(e) =>
-                    updateSettings({
-                      ...state.settings,
-                      weixin: { ...state.settings.weixin, route_tag: e.target.value },
-                    })
-                  }
-                />
-              </Field>
-              <Field label="Active Account">
-                <select
-                  value={state.settings.active_account_id}
-                  onChange={(e) =>
-                    updateSettings({ ...state.settings, active_account_id: e.target.value })
-                  }
-                >
-                  <option value="">Select account</option>
-                  {state.accounts.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {account.id} / {account.user_id}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            </div>
-
-            {qrURL && (
-              <div className="qr-box">
-                <img src={qrURL} alt="WeChat login QR" />
-              </div>
-            )}
-          </article>
-
-          <article className="panel rule-list">
-            <div className="panel-header">
-              <div>
-                <h2><Send size={18} /> 转发规则</h2>
-                <p>按顺序匹配消息，命中第一条启用规则后转发。</p>
-              </div>
-            </div>
-            <div className="rule-items">
-              {state.settings.rules.map((rule) => (
-                <button
-                  key={rule.id}
-                  className={`rule-item ${selectedRule?.id === rule.id ? 'selected' : ''}`}
-                  onClick={() => setSelectedRuleId(rule.id)}
-                >
-                  <div>
-                    <strong>{rule.name}</strong>
-                    <span>{rule.match.mode} / {rule.match.pattern || '*'}</span>
-                  </div>
-                  <span className={`pill ${rule.enabled ? 'live' : ''}`}>
-                    {rule.enabled ? 'Enabled' : 'Disabled'}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </article>
+        <section className='summary-grid'>
+          <SummaryCard
+            icon={<Cable size={16} />}
+            title='微信通道'
+            value={state.settings.weixin.base_url}
+            note='通过 OpenClaw 微信接口长轮询收发消息'
+          />
+          <SummaryCard
+            icon={<UserRound size={16} />}
+            title='账号'
+            value={state.accounts[0]?.user_id || '未绑定微信'}
+            note='先扫码登录，再选择活动账号'
+          />
+          <SummaryCard
+            icon={<Send size={16} />}
+            title='规则'
+            value={`${state.settings.rules.length} 条`}
+            note='命中第一条启用规则后转发'
+          />
         </section>
 
-        {selectedRule && (
-          <section className="editor-grid">
-            <article className="panel">
-              <div className="panel-header">
-                <div>
-                  <h2>规则编辑</h2>
-                  <p>用模板把微信消息映射成任意 HTTP 请求。</p>
+        <div className='content-grid'>
+          <section className='column'>
+            <Card
+              title='微信配置'
+              description='这部分只管接微信，不碰你的业务 API。'
+              action={
+                <button className='button secondary' onClick={startLogin}>
+                  <QrCode size={16} />
+                  开始扫码
+                </button>
+              }
+            >
+              <div className='form-grid'>
+                <Field label='Weixin Base URL'>
+                  <input
+                    value={state.settings.weixin.base_url}
+                    onChange={(e) =>
+                      updateSettings({
+                        ...state.settings,
+                        weixin: { ...state.settings.weixin, base_url: e.target.value },
+                      })
+                    }
+                  />
+                </Field>
+                <Field label='Bot Type'>
+                  <input
+                    value={state.settings.weixin.bot_type}
+                    onChange={(e) =>
+                      updateSettings({
+                        ...state.settings,
+                        weixin: { ...state.settings.weixin, bot_type: e.target.value },
+                      })
+                    }
+                  />
+                </Field>
+                <Field label='Route Tag'>
+                  <input
+                    value={state.settings.weixin.route_tag}
+                    onChange={(e) =>
+                      updateSettings({
+                        ...state.settings,
+                        weixin: { ...state.settings.weixin, route_tag: e.target.value },
+                      })
+                    }
+                  />
+                </Field>
+                <Field label='Active Account'>
+                  <select
+                    value={state.settings.active_account_id}
+                    onChange={(e) =>
+                      updateSettings({ ...state.settings, active_account_id: e.target.value })
+                    }
+                  >
+                    <option value=''>选择一个账号</option>
+                    {state.accounts.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {account.id} / {account.user_id}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+
+              {qrURL && (
+                <div className='qr-panel'>
+                  <img src={qrURL} alt='WeChat QR' />
                 </div>
-                <button className="ghost danger" onClick={() => removeRule(selectedRule.id)}>
-                  <Trash2 size={16} /> Delete
+              )}
+            </Card>
+
+            <Card
+              title='运行控制'
+              description='扫码完成后，选择活动账号，再启动中继。'
+              action={
+                <StatusBadge live={state.runtime.running}>
+                  {state.runtime.running ? '运行中' : '已停止'}
+                </StatusBadge>
+              }
+            >
+              <div className='action-row'>
+                <button className='button primary' onClick={startRuntime}>
+                  <CirclePlay size={16} />
+                  启动 Relay
+                </button>
+                <button className='button secondary' onClick={stopRuntime}>
+                  <CircleStop size={16} />
+                  停止 Relay
                 </button>
               </div>
-
-              <div className="form-grid">
-                <Field label="Rule ID">
-                  <input
-                    value={selectedRule.id}
-                    onChange={(e) => updateRule({ id: e.target.value })}
-                  />
-                </Field>
-                <Field label="Rule Name">
-                  <input
-                    value={selectedRule.name}
-                    onChange={(e) => updateRule({ name: e.target.value })}
-                  />
-                </Field>
-                <Field label="Description" full>
-                  <textarea
-                    value={selectedRule.description}
-                    onChange={(e) => updateRule({ description: e.target.value })}
-                  />
-                </Field>
-                <Field label="Enabled">
-                  <select
-                    value={String(selectedRule.enabled)}
-                    onChange={(e) => updateRule({ enabled: e.target.value === 'true' })}
-                  >
-                    <option value="true">Enabled</option>
-                    <option value="false">Disabled</option>
-                  </select>
-                </Field>
-                <Field label="Match Mode">
-                  <select
-                    value={selectedRule.match.mode}
-                    onChange={(e) =>
-                      updateRuleNested('match', { ...selectedRule.match, mode: e.target.value })
-                    }
-                  >
-                    <option value="all">all</option>
-                    <option value="prefix">prefix</option>
-                    <option value="contains">contains</option>
-                    <option value="exact">exact</option>
-                    <option value="regex">regex</option>
-                  </select>
-                </Field>
-                <Field label="Match Pattern" full>
-                  <input
-                    value={selectedRule.match.pattern}
-                    onChange={(e) =>
-                      updateRuleNested('match', { ...selectedRule.match, pattern: e.target.value })
-                    }
-                  />
-                </Field>
-                <Field label="Method">
-                  <input
-                    value={selectedRule.target.method}
-                    onChange={(e) =>
-                      updateRuleNested('target', { ...selectedRule.target, method: e.target.value })
-                    }
-                  />
-                </Field>
-                <Field label="Timeout (ms)">
-                  <input
-                    type="number"
-                    value={selectedRule.target.timeout_ms}
-                    onChange={(e) =>
-                      updateRuleNested('target', {
-                        ...selectedRule.target,
-                        timeout_ms: Number(e.target.value),
-                      })
-                    }
-                  />
-                </Field>
-                <Field label="URL Template" full>
-                  <input
-                    value={selectedRule.target.url_template}
-                    onChange={(e) =>
-                      updateRuleNested('target', {
-                        ...selectedRule.target,
-                        url_template: e.target.value,
-                      })
-                    }
-                  />
-                </Field>
-                <Field label="Headers (JSON)" full>
-                  <textarea
-                    value={JSON.stringify(selectedRule.target.headers, null, 2)}
-                    onChange={(e) =>
-                      updateRuleNested('target', {
-                        ...selectedRule.target,
-                        headers: safeJSONMap(e.target.value),
-                      })
-                    }
-                  />
-                </Field>
-                <Field label="Query (JSON)" full>
-                  <textarea
-                    value={JSON.stringify(selectedRule.target.query, null, 2)}
-                    onChange={(e) =>
-                      updateRuleNested('target', {
-                        ...selectedRule.target,
-                        query: safeJSONMap(e.target.value),
-                      })
-                    }
-                  />
-                </Field>
-                <Field label="Body Template" full>
-                  <textarea
-                    value={selectedRule.target.body_template}
-                    onChange={(e) =>
-                      updateRuleNested('target', {
-                        ...selectedRule.target,
-                        body_template: e.target.value,
-                      })
-                    }
-                  />
-                </Field>
-                <Field label="Response Template" full>
-                  <textarea
-                    value={selectedRule.response.template}
-                    onChange={(e) =>
-                      updateRuleNested('response', {
-                        ...selectedRule.response,
-                        template: e.target.value,
-                      })
-                    }
-                  />
-                </Field>
+              <div className='status-strip'>
+                <CheckCircle2 size={16} />
+                {statusMessage}
               </div>
-            </article>
+            </Card>
 
-            <article className="panel">
-              <div className="panel-header">
-                <div>
-                  <h2>模板上下文</h2>
-                  <p>可以在 URL、Header、Body、Response 模板中引用这些字段。</p>
-                </div>
+            <Card
+              title='规则列表'
+              description='选中一条规则进行编辑。'
+              action={
+                <button className='button secondary' onClick={addRule}>
+                  <Plus size={16} />
+                  新建规则
+                </button>
+              }
+            >
+              <div className='rule-list'>
+                {state.settings.rules.map((rule) => (
+                  <button
+                    key={rule.id}
+                    className={`rule-row ${selectedRule?.id === rule.id ? 'selected' : ''}`}
+                    onClick={() => setSelectedRuleId(rule.id)}
+                  >
+                    <div>
+                      <strong>{rule.name}</strong>
+                      <span>
+                        {rule.match.mode} / {rule.match.pattern || '*'}
+                      </span>
+                    </div>
+                    <StatusBadge live={rule.enabled}>{rule.enabled ? '启用' : '停用'}</StatusBadge>
+                  </button>
+                ))}
               </div>
-              <pre className="code-block">{`{{ .Message.text }}
-{{ .Message.from }}
-{{ .Message.context_token }}
-{{ .Account.id }}
-{{ .Account.raw_id }}
-{{ .Account.user_id }}
-{{ .Now.rfc3339 }}
-
-Response template can read:
-{{ .Response.status_code }}
-{{ .Response.body }}
-{{ .Response.json }}
-{{ .Response.headers }}`}</pre>
-              <div className="status-box">{message || 'Ready.'}</div>
-            </article>
+            </Card>
           </section>
-        )}
+
+          <section className='column'>
+            {selectedRule ? (
+              <>
+                <Card
+                  title='规则基本信息'
+                  description='这里定义命中方式，不定义协议细节。'
+                  action={
+                    <button className='button danger' onClick={removeRule}>
+                      <Trash2 size={16} />
+                      删除规则
+                    </button>
+                  }
+                >
+                  <div className='form-grid'>
+                    <Field label='Rule ID'>
+                      <input value={selectedRule.id} onChange={(e) => updateRule({ id: e.target.value })} />
+                    </Field>
+                    <Field label='Rule Name'>
+                      <input value={selectedRule.name} onChange={(e) => updateRule({ name: e.target.value })} />
+                    </Field>
+                    <Field label='Enabled'>
+                      <select
+                        value={String(selectedRule.enabled)}
+                        onChange={(e) => updateRule({ enabled: e.target.value === 'true' })}
+                      >
+                        <option value='true'>启用</option>
+                        <option value='false'>停用</option>
+                      </select>
+                    </Field>
+                    <Field label='Match Mode'>
+                      <select
+                        value={selectedRule.match.mode}
+                        onChange={(e) =>
+                          updateRuleNested('match', { ...selectedRule.match, mode: e.target.value })
+                        }
+                      >
+                        <option value='all'>all</option>
+                        <option value='prefix'>prefix</option>
+                        <option value='contains'>contains</option>
+                        <option value='exact'>exact</option>
+                        <option value='regex'>regex</option>
+                      </select>
+                    </Field>
+                    <Field label='Match Pattern' full>
+                      <input
+                        value={selectedRule.match.pattern}
+                        onChange={(e) =>
+                          updateRuleNested('match', { ...selectedRule.match, pattern: e.target.value })
+                        }
+                      />
+                    </Field>
+                    <Field label='Description' full>
+                      <textarea
+                        value={selectedRule.description}
+                        onChange={(e) => updateRule({ description: e.target.value })}
+                      />
+                    </Field>
+                  </div>
+                </Card>
+
+                <Card
+                  title='HTTP 请求'
+                  description='URL / Method / Timeout 这些是请求骨架。'
+                >
+                  <div className='form-grid'>
+                    <Field label='Method'>
+                      <input
+                        value={selectedRule.target.method}
+                        onChange={(e) =>
+                          updateRuleNested('target', { ...selectedRule.target, method: e.target.value })
+                        }
+                      />
+                    </Field>
+                    <Field label='Timeout (ms)'>
+                      <input
+                        type='number'
+                        value={selectedRule.target.timeout_ms}
+                        onChange={(e) =>
+                          updateRuleNested('target', {
+                            ...selectedRule.target,
+                            timeout_ms: Number(e.target.value),
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label='URL Template' full>
+                      <input
+                        value={selectedRule.target.url_template}
+                        onChange={(e) =>
+                          updateRuleNested('target', {
+                            ...selectedRule.target,
+                            url_template: e.target.value,
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label='Skip TLS Verify'>
+                      <select
+                        value={String(selectedRule.target.insecure_skip_tls)}
+                        onChange={(e) =>
+                          updateRuleNested('target', {
+                            ...selectedRule.target,
+                            insecure_skip_tls: e.target.value === 'true',
+                          })
+                        }
+                      >
+                        <option value='false'>false</option>
+                        <option value='true'>true</option>
+                      </select>
+                    </Field>
+                  </div>
+                </Card>
+
+                <Card
+                  title='Headers / Query'
+                  description='用 VS Code 风格编辑器编辑 JSON，失焦时应用。'
+                >
+                  <div className='editor-grid'>
+                    <div>
+                      <SectionLabel title='Headers JSON' />
+                      <CodeEditor
+                        value={jsonDrafts.headers}
+                        language='json'
+                        onChange={(value) =>
+                          setJsonDrafts((current) => ({ ...current, headers: value }))
+                        }
+                        onBlur={() => applyJsonDraft('headers')}
+                      />
+                    </div>
+                    <div>
+                      <SectionLabel title='Query JSON' />
+                      <CodeEditor
+                        value={jsonDrafts.query}
+                        language='json'
+                        onChange={(value) =>
+                          setJsonDrafts((current) => ({ ...current, query: value }))
+                        }
+                        onBlur={() => applyJsonDraft('query')}
+                      />
+                    </div>
+                  </div>
+                </Card>
+
+                <Card
+                  title='Body / Response Template'
+                  description='这里才是模板逻辑。左边发上游，右边决定回微信什么。'
+                >
+                  <div className='editor-grid'>
+                    <div>
+                      <SectionLabel title='Body Template' />
+                      <CodeEditor
+                        value={selectedRule.target.body_template}
+                        language='json'
+                        onChange={(value) =>
+                          updateRuleNested('target', {
+                            ...selectedRule.target,
+                            body_template: value,
+                          })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <SectionLabel title='Response Template' />
+                      <CodeEditor
+                        value={selectedRule.response.template}
+                        language='handlebars'
+                        onChange={(value) =>
+                          updateRuleNested('response', {
+                            ...selectedRule.response,
+                            template: value,
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                </Card>
+
+                <Card
+                  title='模板上下文'
+                  description='这是当前规则可用的模板变量。'
+                >
+                  <CodePreview />
+                </Card>
+              </>
+            ) : (
+              <Card title='没有规则' description='先新建一条规则。'>
+                <button className='button primary' onClick={addRule}>
+                  <Plus size={16} />
+                  新建第一条规则
+                </button>
+              </Card>
+            )}
+          </section>
+        </div>
       </main>
     </div>
+  )
+}
+
+function Card({
+  title,
+  description,
+  action,
+  children,
+}: {
+  title: string
+  description?: string
+  action?: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <section className='card'>
+      <div className='card-header'>
+        <div>
+          <h2>{title}</h2>
+          {description ? <p>{description}</p> : null}
+        </div>
+        {action}
+      </div>
+      <div className='card-content'>{children}</div>
+    </section>
   )
 }
 
@@ -529,12 +668,88 @@ function Field({
   )
 }
 
-function safeJSONMap(raw: string): Record<string, string> {
-  try {
-    return JSON.parse(raw) as Record<string, string>
-  } catch {
-    return {}
-  }
+function StatusBadge({ live, children }: { live: boolean; children: React.ReactNode }) {
+  return <span className={`badge ${live ? 'live' : ''}`}>{children}</span>
+}
+
+function SummaryCard({
+  icon,
+  title,
+  value,
+  note,
+}: {
+  icon: React.ReactNode
+  title: string
+  value: string
+  note: string
+}) {
+  return (
+    <div className='summary-card'>
+      <div className='summary-icon'>{icon}</div>
+      <div>
+        <div className='summary-title'>{title}</div>
+        <div className='summary-value'>{value}</div>
+        <div className='summary-note'>{note}</div>
+      </div>
+    </div>
+  )
+}
+
+function SectionLabel({ title }: { title: string }) {
+  return <div className='section-label'>{title}</div>
+}
+
+function CodeEditor({
+  value,
+  language,
+  onChange,
+  onBlur,
+}: {
+  value: string
+  language: string
+  onChange: (value: string) => void
+  onBlur?: () => void
+}) {
+  return (
+    <div className='editor-shell'>
+      <Editor
+        height='220px'
+        defaultLanguage={language}
+        value={value}
+        theme='vs-dark'
+        options={{
+          minimap: { enabled: false },
+          fontSize: 13,
+          lineNumbers: 'on',
+          roundedSelection: false,
+          scrollBeyondLastLine: false,
+          automaticLayout: true,
+          wordWrap: 'on',
+        }}
+        onChange={(next) => onChange(next ?? '')}
+        onMount={(editor) => {
+          editor.onDidBlurEditorText(() => onBlur?.())
+        }}
+      />
+    </div>
+  )
+}
+
+function CodePreview() {
+  return (
+    <pre className='code-preview'>{`{{ .Message.text }}
+{{ .Message.from }}
+{{ .Message.context_token }}
+{{ .Account.id }}
+{{ .Account.raw_id }}
+{{ .Account.user_id }}
+{{ .Now.rfc3339 }}
+
+{{ .Response.status_code }}
+{{ .Response.body }}
+{{ .Response.json }}
+{{ .Response.headers }}`}</pre>
+  )
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
