@@ -70,6 +70,21 @@ type RuntimeState = {
   account_id: string
 }
 
+type PreviewResult = {
+  rule_id: string
+  request_method: string
+  request_url: string
+  request_headers: Record<string, string>
+  request_query: Record<string, string>
+  request_body: string
+  status_code: number
+  response_body: string
+  response_json: Record<string, unknown>
+  response_headers: Record<string, unknown>
+  reply: string
+  duration_ms: number
+}
+
 type AppState = {
   settings: Settings
   accounts: Account[]
@@ -112,6 +127,15 @@ function App() {
   const [qrURL, setQrURL] = React.useState('')
   const [loginSession, setLoginSession] = React.useState('')
   const [jsonDrafts, setJsonDrafts] = React.useState<JsonDrafts>({ headers: '{}', query: '{}' })
+  const [ruleSearch, setRuleSearch] = React.useState('')
+  const [ruleFilter, setRuleFilter] = React.useState<'all' | 'enabled' | 'disabled'>('all')
+  const [ruleSort, setRuleSort] = React.useState<'name' | 'method' | 'match' | 'status'>('name')
+  const [previewAccountId, setPreviewAccountId] = React.useState('')
+  const [previewUserId, setPreviewUserId] = React.useState('debug-user@im.wechat')
+  const [previewText, setPreviewText] = React.useState('你好')
+  const [previewLoading, setPreviewLoading] = React.useState(false)
+  const [previewResult, setPreviewResult] = React.useState<PreviewResult | null>(null)
+  const [previewError, setPreviewError] = React.useState('')
 
   const loadState = React.useCallback(async () => {
     const resp = await fetch('/api/state')
@@ -146,6 +170,7 @@ function App() {
   const activeAccount = state?.accounts.find((account) => account.id === state.settings.active_account_id)
   const selectedBindingAccountId = bindingAccountId || state?.settings.active_account_id || state?.accounts[0]?.id || ''
   const boundRuleIds = state?.settings.account_rules[selectedBindingAccountId] ?? []
+  const selectedPreviewAccountId = previewAccountId || state?.settings.active_account_id || state?.accounts[0]?.id || ''
 
   React.useEffect(() => {
     if (!selectedRule) return
@@ -155,7 +180,40 @@ function App() {
     })
   }, [selectedRule?.id])
 
+  React.useEffect(() => {
+    setPreviewResult(null)
+    setPreviewError('')
+  }, [selectedRule?.id])
+
   if (!state) return <div className='loading'>Loading…</div>
+
+  const filteredRules = [...state.settings.rules]
+    .filter((rule) => {
+      if (ruleFilter === 'enabled') return rule.enabled
+      if (ruleFilter === 'disabled') return !rule.enabled
+      return true
+    })
+    .filter((rule) => {
+      const term = ruleSearch.trim().toLowerCase()
+      if (!term) return true
+      return [rule.name, rule.id, rule.description, rule.match.pattern, rule.target.url_template]
+        .join(' ')
+        .toLowerCase()
+        .includes(term)
+    })
+    .sort((a, b) => {
+      switch (ruleSort) {
+        case 'method':
+          return a.target.method.localeCompare(b.target.method)
+        case 'match':
+          return `${a.match.mode}:${a.match.pattern}`.localeCompare(`${b.match.mode}:${b.match.pattern}`)
+        case 'status':
+          return Number(b.enabled) - Number(a.enabled) || a.name.localeCompare(b.name)
+        case 'name':
+        default:
+          return a.name.localeCompare(b.name)
+      }
+    })
 
   const updateSettings = (next: Settings) => setState({ ...state, settings: next })
 
@@ -249,6 +307,31 @@ function App() {
       setStatusMessage(`${kind} 已应用`)
     } catch {
       setStatusMessage(`${kind} JSON 格式错误，未保存`)
+    }
+  }
+
+  const runPreview = async () => {
+    if (!selectedRule) return
+    setPreviewLoading(true)
+    setPreviewResult(null)
+    setPreviewError('')
+    try {
+      const resp = await fetch('/api/rules/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rule: selectedRule,
+          account_id: selectedPreviewAccountId,
+          user_id: previewUserId,
+          text: previewText,
+        }),
+      })
+      const data = await resp.json()
+      setPreviewResult((data.result as PreviewResult) ?? null)
+      setPreviewError((data.error as string) ?? '')
+      setStatusMessage(data.ok ? '规则调试完成' : '规则调试返回错误')
+    } finally {
+      setPreviewLoading(false)
     }
   }
 
@@ -398,6 +481,21 @@ function App() {
           {currentView === 'rules' && (
             <section className='view-grid single'>
               <Card title='规则表' description='这里是规则总表。先建规则，再绑定到具体微信账号。' action={<button className='button secondary' onClick={addRule}><Plus size={16} />新建规则</button>}>
+                <div className='table-toolbar'>
+                  <input className='toolbar-search' placeholder='搜索规则名称、ID、URL 或匹配词' value={ruleSearch} onChange={(e) => setRuleSearch(e.target.value)} />
+                  <select value={ruleFilter} onChange={(e) => setRuleFilter(e.target.value as 'all' | 'enabled' | 'disabled')}>
+                    <option value='all'>全部状态</option>
+                    <option value='enabled'>仅启用</option>
+                    <option value='disabled'>仅停用</option>
+                  </select>
+                  <select value={ruleSort} onChange={(e) => setRuleSort(e.target.value as 'name' | 'method' | 'match' | 'status')}>
+                    <option value='name'>按名称</option>
+                    <option value='method'>按方法</option>
+                    <option value='match'>按匹配</option>
+                    <option value='status'>按状态</option>
+                  </select>
+                  <div className='table-meta'>共 {filteredRules.length} 条</div>
+                </div>
                 <div className='rules-table'>
                   <div className='rules-table-head'>
                     <span>名称</span>
@@ -405,7 +503,7 @@ function App() {
                     <span>方法</span>
                     <span>状态</span>
                   </div>
-                  {state.settings.rules.map((rule) => (
+                  {filteredRules.map((rule) => (
                     <button
                       key={rule.id}
                       className={`rules-table-row ${selectedRule?.id === rule.id ? 'selected' : ''}`}
@@ -423,6 +521,7 @@ function App() {
                       <StatusBadge live={rule.enabled}>{rule.enabled ? '启用' : '停用'}</StatusBadge>
                     </button>
                   ))}
+                  {filteredRules.length === 0 ? <div className='empty-state'>没有符合当前筛选条件的规则。</div> : null}
                 </div>
               </Card>
             </section>
@@ -533,6 +632,60 @@ function App() {
 
                     <Card title='模板上下文' description='这是当前规则可用的模板变量。'>
                       <CodePreview />
+                    </Card>
+
+                    <Card title='规则调试' description='用一个样例消息实际请求上游，直接看渲染后的请求与最终回微信文本。' action={<button className='button primary' onClick={runPreview} disabled={previewLoading || !selectedPreviewAccountId}><CirclePlay size={16} />{previewLoading ? '调试中…' : '运行调试'}</button>}>
+                      <div className='form-grid'>
+                        <Field label='调试账号'>
+                          <select value={selectedPreviewAccountId} onChange={(e) => setPreviewAccountId(e.target.value)}>
+                            <option value=''>选择一个账号</option>
+                            {state.accounts.map((account) => (
+                              <option key={account.id} value={account.id}>{account.id} / {account.user_id}</option>
+                            ))}
+                          </select>
+                        </Field>
+                        <Field label='发送方 User ID'>
+                          <input value={previewUserId} onChange={(e) => setPreviewUserId(e.target.value)} />
+                        </Field>
+                        <Field label='样例消息' full>
+                          <textarea value={previewText} onChange={(e) => setPreviewText(e.target.value)} />
+                        </Field>
+                      </div>
+
+                      {previewError ? <div className='error-strip'>{previewError}</div> : null}
+
+                      {previewResult ? (
+                        <div className='preview-stack'>
+                          <div className='preview-meta'>
+                            <span>{previewResult.request_method}</span>
+                            <span>{previewResult.request_url}</span>
+                            <span>HTTP {previewResult.status_code || 'ERR'}</span>
+                            <span>{previewResult.duration_ms} ms</span>
+                          </div>
+
+                          <div className='editor-grid'>
+                            <div>
+                              <SectionLabel title='Rendered Request Body' />
+                              <pre className='code-preview'>{previewResult.request_body || '(empty)'}</pre>
+                            </div>
+                            <div>
+                              <SectionLabel title='Rendered Reply' />
+                              <pre className='code-preview'>{previewResult.reply || '(empty)'}</pre>
+                            </div>
+                          </div>
+
+                          <div className='editor-grid'>
+                            <div>
+                              <SectionLabel title='Request Headers' />
+                              <pre className='code-preview'>{JSON.stringify(previewResult.request_headers ?? {}, null, 2)}</pre>
+                            </div>
+                            <div>
+                              <SectionLabel title='Response Body' />
+                              <pre className='code-preview'>{previewResult.response_body || '(empty)'}</pre>
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
                     </Card>
                   </>
                 ) : null}

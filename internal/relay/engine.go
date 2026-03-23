@@ -31,6 +31,21 @@ type MessageContext struct {
 	ContextToken string
 }
 
+type ExecutionResult struct {
+	RuleID         string            `json:"rule_id"`
+	RequestMethod  string            `json:"request_method"`
+	RequestURL     string            `json:"request_url"`
+	RequestHeaders map[string]string `json:"request_headers"`
+	RequestQuery   map[string]string `json:"request_query"`
+	RequestBody    string            `json:"request_body"`
+	StatusCode     int               `json:"status_code"`
+	ResponseBody   string            `json:"response_body"`
+	ResponseJSON   map[string]any    `json:"response_json"`
+	ResponseHeader map[string]any    `json:"response_headers"`
+	Reply          string            `json:"reply"`
+	DurationMS     int64             `json:"duration_ms"`
+}
+
 type templatePayload struct {
 	Message  map[string]any `json:"message"`
 	Account  map[string]any `json:"account"`
@@ -54,22 +69,49 @@ func (e *Engine) Reply(ctx context.Context, msg MessageContext) (string, string,
 		return "", "", err
 	}
 
+	result, err := e.executeRule(ctx, rule, msg)
+	if err != nil {
+		return result.Reply, rule.ID, err
+	}
+
+	reply := result.Reply
+
+	if rule.Conversation.SaveHistory {
+		history, loadErr := e.store.LoadConversation(msg.AccountID, msg.FromUserID)
+		if loadErr == nil {
+			history = append(history,
+				store.Message{Role: "user", Content: msg.Text},
+				store.Message{Role: "assistant", Content: reply},
+			)
+			history = trimConversation(history, max(1, rule.Conversation.HistoryLimit))
+			_ = e.store.SaveConversation(msg.AccountID, msg.FromUserID, history)
+		}
+	}
+
+	return reply, rule.ID, nil
+}
+
+func (e *Engine) ExecuteRule(ctx context.Context, rule store.Rule, msg MessageContext) (ExecutionResult, error) {
+	return e.executeRule(ctx, rule, msg)
+}
+
+func (e *Engine) executeRule(ctx context.Context, rule store.Rule, msg MessageContext) (ExecutionResult, error) {
 	reqData := buildBaseTemplatePayload(msg)
 	requestURL, err := renderTemplate(rule.Target.URLTemplate, reqData)
 	if err != nil {
-		return "", rule.ID, fmt.Errorf("render url: %w", err)
+		return ExecutionResult{}, fmt.Errorf("render url: %w", err)
 	}
 	bodyText, err := renderTemplate(rule.Target.BodyTemplate, reqData)
 	if err != nil {
-		return "", rule.ID, fmt.Errorf("render body: %w", err)
+		return ExecutionResult{}, fmt.Errorf("render body: %w", err)
 	}
 	headers, err := renderStringMap(rule.Target.Headers, reqData)
 	if err != nil {
-		return "", rule.ID, fmt.Errorf("render headers: %w", err)
+		return ExecutionResult{}, fmt.Errorf("render headers: %w", err)
 	}
 	query, err := renderStringMap(rule.Target.Query, reqData)
 	if err != nil {
-		return "", rule.ID, fmt.Errorf("render query: %w", err)
+		return ExecutionResult{}, fmt.Errorf("render query: %w", err)
 	}
 
 	method := strings.ToUpper(strings.TrimSpace(rule.Target.Method))
@@ -79,7 +121,7 @@ func (e *Engine) Reply(ctx context.Context, msg MessageContext) (string, string,
 
 	finalURL, err := withQuery(requestURL, query)
 	if err != nil {
-		return "", rule.ID, fmt.Errorf("build query: %w", err)
+		return ExecutionResult{}, fmt.Errorf("build query: %w", err)
 	}
 
 	timeout := time.Duration(rule.Target.TimeoutMS) * time.Millisecond
@@ -96,7 +138,7 @@ func (e *Engine) Reply(ctx context.Context, msg MessageContext) (string, string,
 
 	req, err := http.NewRequestWithContext(ctx, method, finalURL, strings.NewReader(bodyText))
 	if err != nil {
-		return "", rule.ID, err
+		return ExecutionResult{}, err
 	}
 	for key, value := range headers {
 		req.Header.Set(key, value)
@@ -105,43 +147,53 @@ func (e *Engine) Reply(ctx context.Context, msg MessageContext) (string, string,
 		req.Header.Set("Content-Type", "application/json")
 	}
 
+	startedAt := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", rule.ID, err
+		return ExecutionResult{
+			RuleID:         rule.ID,
+			RequestMethod:  method,
+			RequestURL:     finalURL,
+			RequestHeaders: headers,
+			RequestQuery:   query,
+			RequestBody:    bodyText,
+			DurationMS:     time.Since(startedAt).Milliseconds(),
+		}, err
 	}
 	defer resp.Body.Close()
 
 	rawBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", rule.ID, err
+		return ExecutionResult{}, err
 	}
 
 	respData := buildResponseTemplatePayload(reqData, finalURL, bodyText, resp, rawBody)
 	reply, err := renderTemplate(rule.Response.Template, respData)
 	if err != nil {
-		return "", rule.ID, fmt.Errorf("render response template: %w", err)
+		return ExecutionResult{}, fmt.Errorf("render response template: %w", err)
 	}
 	reply = strings.TrimSpace(reply)
 	if reply == "" {
 		reply = strings.TrimSpace(string(rawBody))
 	}
+	result := ExecutionResult{
+		RuleID:         rule.ID,
+		RequestMethod:  method,
+		RequestURL:     finalURL,
+		RequestHeaders: headers,
+		RequestQuery:   query,
+		RequestBody:    bodyText,
+		StatusCode:     resp.StatusCode,
+		ResponseBody:   string(rawBody),
+		ResponseJSON:   mapFromAny(respData.Response["json"]),
+		ResponseHeader: mapFromAny(respData.Response["headers"]),
+		Reply:          reply,
+		DurationMS:     time.Since(startedAt).Milliseconds(),
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return reply, rule.ID, fmt.Errorf("upstream http %d", resp.StatusCode)
+		return result, fmt.Errorf("upstream http %d", resp.StatusCode)
 	}
-
-	if rule.Conversation.SaveHistory {
-		history, loadErr := e.store.LoadConversation(msg.AccountID, msg.FromUserID)
-		if loadErr == nil {
-			history = append(history,
-				store.Message{Role: "user", Content: msg.Text},
-				store.Message{Role: "assistant", Content: reply},
-			)
-			history = trimConversation(history, max(1, rule.Conversation.HistoryLimit))
-			_ = e.store.SaveConversation(msg.AccountID, msg.FromUserID, history)
-		}
-	}
-
-	return reply, rule.ID, nil
+	return result, nil
 }
 
 func selectRule(rules []store.Rule, text string) (store.Rule, error) {
@@ -276,4 +328,12 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func mapFromAny(value any) map[string]any {
+	out, ok := value.(map[string]any)
+	if ok && out != nil {
+		return out
+	}
+	return map[string]any{}
 }

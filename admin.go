@@ -71,6 +71,7 @@ func (s *AdminServer) Run() error {
 func (s *AdminServer) routes() {
 	s.mux.HandleFunc("/api/state", s.handleState)
 	s.mux.HandleFunc("/api/settings", s.handleSettings)
+	s.mux.HandleFunc("/api/rules/preview", s.handleRulePreview)
 	s.mux.HandleFunc("/api/runtime/start", s.handleRuntimeStart)
 	s.mux.HandleFunc("/api/runtime/stop", s.handleRuntimeStop)
 	s.mux.HandleFunc("/api/login/start", s.handleLoginStart)
@@ -131,6 +132,62 @@ func (s *AdminServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
 	}
+}
+
+type rulePreviewRequest struct {
+	Rule      store.Rule `json:"rule"`
+	AccountID string     `json:"account_id"`
+	UserID    string     `json:"user_id"`
+	Text      string     `json:"text"`
+}
+
+func (s *AdminServer) handleRulePreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	var req rulePreviewRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	settings, err := s.store.LoadSettings(s.cfg)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if strings.TrimSpace(req.AccountID) == "" {
+		req.AccountID = settings.ActiveAccountID
+	}
+	account, err := s.store.LoadAccount(req.AccountID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	engine := relay.NewEngine(s.store, func() (store.Settings, error) {
+		return s.store.LoadSettings(s.cfg)
+	})
+	result, runErr := engine.ExecuteRule(r.Context(), req.Rule, relay.MessageContext{
+		AccountID:    account.ID,
+		AccountRawID: account.RawID,
+		AccountUser:  account.UserID,
+		FromUserID:   localFirstNonEmpty(strings.TrimSpace(req.UserID), "debug-user@im.wechat"),
+		Text:         req.Text,
+		ContextToken: "debug-context-token",
+	})
+	if runErr != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":     false,
+			"result": result,
+			"error":  runErr.Error(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"result": result,
+		"error":  "",
+	})
 }
 
 func (s *AdminServer) handleLoginStart(w http.ResponseWriter, r *http.Request) {

@@ -421,6 +421,24 @@ textarea {
   gap: 8px;
 }
 
+.table-toolbar {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) 140px 140px auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.toolbar-search {
+  min-width: 0;
+}
+
+.table-meta {
+  text-align: right;
+  color: var(--muted-foreground);
+  font-size: 0.82rem;
+}
+
 .rules-table-head {
   display: grid;
   grid-template-columns: 1.3fr 1.3fr 0.7fr auto;
@@ -512,6 +530,47 @@ textarea {
   gap: 12px;
 }
 
+.preview-stack {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.preview-meta span,
+.empty-state,
+.error-strip {
+  font-size: 0.82rem;
+}
+
+.preview-meta span {
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+
+.empty-state {
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  color: var(--muted-foreground);
+  background: #fcfcfc;
+}
+
+.error-strip {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(220, 38, 38, 0.08);
+  color: rgb(185, 28, 28);
+}
+
 .editor-shell {
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -536,7 +595,8 @@ textarea {
   .summary-grid,
   .editor-grid,
   .view-grid.detail,
-  .view-grid.single {
+  .view-grid.single,
+  .table-toolbar {
     grid-template-columns: 1fr;
   }
 }
