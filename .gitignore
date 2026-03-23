@@ -1,0 +1,10 @@
+dist/
+web/dist/
+web/node_modules/
+web/*.js
+web/*.d.ts
+web/*.tsbuildinfo
+.DS_Store
+*.log
+bin/
+tmp/

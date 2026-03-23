@@ -1,0 +1,23 @@
+name: "wechat-api-relay"
+arch: "amd64"
+platform: "linux"
+version: "${VERSION}"
+section: "default"
+priority: "optional"
+maintainer: "OpenAI Codex"
+description: |
+  WeChat relay gateway that connects the OpenClaw WeChat transport to arbitrary HTTP APIs.
+homepage: "https://github.com/axeprpr/wechat-api-relay"
+license: "MIT"
+contents:
+  - src: ./dist/wechat-api-relay
+    dst: /usr/bin/wechat-api-relay
+    file_info:
+      mode: 0755
+  - src: ./web/dist
+    dst: /usr/share/wechat-api-relay/web/dist
+  - src: ./packaging/wechat-api-relay.service
+    dst: /etc/systemd/system/wechat-api-relay.service
+scripts:
+  postinstall: ./packaging/postinstall.sh
+  postremove: ./packaging/postremove.sh

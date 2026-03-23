@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Setup nfpm
+        uses: goreleaser/nfpm-action@v1
+        with:
+          version: latest
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=0.1.0-dev.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install frontend deps
+        working-directory: web
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: web
+        run: npm run build
+
+      - name: Build backend
+        run: |
+          mkdir -p dist/packages
+          go build -o dist/wechat-api-relay .
+
+      - name: Build packages
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          nfpm package --config packaging/nfpm.yaml --target dist/packages/wechat-api-relay_${VERSION}_linux_amd64.deb
+          nfpm package --config packaging/nfpm.yaml --packager rpm --target dist/packages/wechat-api-relay-${VERSION}-1.x86_64.rpm
+          tar -czf dist/packages/wechat-api-relay_${VERSION}_linux_amd64.tar.gz dist/wechat-api-relay web/dist README.md README_EN.md docs
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/packages/*.deb
+            dist/packages/*.rpm
+            dist/packages/*.tar.gz

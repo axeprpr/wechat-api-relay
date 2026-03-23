@@ -1,0 +1,15 @@
+[Unit]
+Description=wechat-api-relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/lib/wechat-api-relay
+Environment=WECHAT_RELAY_WEB_DIR=/usr/share/wechat-api-relay/web/dist
+ExecStart=/usr/bin/wechat-api-relay serve --addr 0.0.0.0:3222
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
