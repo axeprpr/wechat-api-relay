@@ -282,6 +282,14 @@ textarea {
   font-weight: 600;
 }
 
+.title-row,
+.field-label,
+.label-with-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .card-header p {
   margin: 4px 0 0;
   font-size: 0.875rem;
@@ -310,6 +318,50 @@ textarea {
 .section-label {
   font-size: 0.875rem;
   font-weight: 500;
+}
+
+.hint-bubble {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  cursor: help;
+}
+
+.hint-bubble:focus-visible {
+  outline: 2px solid #111827;
+  outline-offset: 2px;
+}
+
+.hint-popover {
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  z-index: 20;
+  width: 300px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: white;
+  color: var(--foreground);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%) translateX(4px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.hint-bubble:hover .hint-popover,
+.hint-bubble:focus .hint-popover,
+.hint-bubble:focus-within .hint-popover {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
 }
 
 input,
