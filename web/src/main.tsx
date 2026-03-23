@@ -3,9 +3,7 @@ import ReactDOM from 'react-dom/client'
 import Editor from '@monaco-editor/react'
 import {
   Bot,
-  Cable,
   CheckCircle2,
-  ChevronRight,
   CircleHelp,
   CirclePlay,
   CircleStop,
@@ -16,7 +14,7 @@ import {
   Save,
   Settings2,
   Trash2,
-  UserRound,
+  X,
 } from 'lucide-react'
 import './styles.css'
 
@@ -72,16 +70,12 @@ type RuntimeState = {
 }
 
 type PreviewResult = {
-  rule_id: string
   request_method: string
   request_url: string
   request_headers: Record<string, string>
-  request_query: Record<string, string>
   request_body: string
   status_code: number
   response_body: string
-  response_json: Record<string, unknown>
-  response_headers: Record<string, unknown>
   reply: string
   duration_ms: number
 }
@@ -92,12 +86,23 @@ type AppState = {
   runtime: RuntimeState
 }
 
+type RuleDraft = Rule
+
+type WeixinConfigDraft = {
+  base_url: string
+  bot_type: string
+  route_tag: string
+  rule_ids: string[]
+}
+
 type JsonDrafts = {
   headers: string
   query: string
 }
 
-type ViewKey = 'weixin' | 'bindings' | 'rules' | 'detail'
+type ViewKey = 'rules' | 'weixin'
+type RuleStep = 1 | 2 | 3
+type ConfigStep = 1 | 2 | 3
 
 const emptyRule = (): Rule => ({
   id: `rule-${Math.random().toString(36).slice(2, 8)}`,
@@ -120,35 +125,67 @@ const emptyRule = (): Rule => ({
 
 function App() {
   const [state, setState] = React.useState<AppState | null>(null)
-  const [selectedRuleId, setSelectedRuleId] = React.useState('')
-  const [bindingAccountId, setBindingAccountId] = React.useState('')
-  const [currentView, setCurrentView] = React.useState<ViewKey>('weixin')
-  const [saving, setSaving] = React.useState(false)
+  const [currentView, setCurrentView] = React.useState<ViewKey>('rules')
   const [statusMessage, setStatusMessage] = React.useState('Ready')
-  const [qrURL, setQrURL] = React.useState('')
-  const [loginSession, setLoginSession] = React.useState('')
-  const [jsonDrafts, setJsonDrafts] = React.useState<JsonDrafts>({ headers: '{}', query: '{}' })
+
   const [ruleSearch, setRuleSearch] = React.useState('')
-  const [ruleFilter, setRuleFilter] = React.useState<'all' | 'enabled' | 'disabled'>('all')
-  const [ruleSort, setRuleSort] = React.useState<'name' | 'method' | 'match' | 'status'>('name')
-  const [previewAccountId, setPreviewAccountId] = React.useState('')
-  const [previewUserId, setPreviewUserId] = React.useState('debug-user@im.wechat')
-  const [previewText, setPreviewText] = React.useState('你好')
+  const [ruleModalOpen, setRuleModalOpen] = React.useState(false)
+  const [ruleStep, setRuleStep] = React.useState<RuleStep>(1)
+  const [ruleDraft, setRuleDraft] = React.useState<RuleDraft>(emptyRule())
+  const [ruleJsonDrafts, setRuleJsonDrafts] = React.useState<JsonDrafts>({ headers: '{}', query: '{}' })
+  const [rulePreviewAccountId, setRulePreviewAccountId] = React.useState('')
+  const [rulePreviewUserId, setRulePreviewUserId] = React.useState('debug-user@im.wechat')
+  const [rulePreviewText, setRulePreviewText] = React.useState('你好')
   const [previewLoading, setPreviewLoading] = React.useState(false)
   const [previewResult, setPreviewResult] = React.useState<PreviewResult | null>(null)
   const [previewError, setPreviewError] = React.useState('')
+
+  const [configModalOpen, setConfigModalOpen] = React.useState(false)
+  const [configStep, setConfigStep] = React.useState<ConfigStep>(1)
+  const [configDraft, setConfigDraft] = React.useState<WeixinConfigDraft>({
+    base_url: '',
+    bot_type: '',
+    route_tag: '',
+    rule_ids: [],
+  })
+  const [editingAccountId, setEditingAccountId] = React.useState('')
+  const [loginSession, setLoginSession] = React.useState('')
+  const [qrURL, setQrURL] = React.useState('')
+  const [pendingRuleIDs, setPendingRuleIDs] = React.useState<string[]>([])
 
   const loadState = React.useCallback(async () => {
     const resp = await fetch('/api/state')
     const data = (await resp.json()) as AppState
     setState(data)
-    setSelectedRuleId((current) => current || data.settings.rules[0]?.id || '')
-    setBindingAccountId((current) => current || data.settings.active_account_id || data.accounts[0]?.id || '')
+    setRulePreviewAccountId((current) => current || data.settings.active_account_id || data.accounts[0]?.id || '')
   }, [])
 
   React.useEffect(() => {
     void loadState()
   }, [loadState])
+
+  const bindRulesAfterLogin = React.useCallback(
+    async (accountID: string, ruleIDs: string[]) => {
+      const resp = await fetch('/api/settings')
+      const settings = (await resp.json()) as Settings
+      const next: Settings = {
+        ...settings,
+        active_account_id: accountID,
+        account_rules: {
+          ...settings.account_rules,
+          [accountID]: ruleIDs,
+        },
+      }
+      const putResp = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(next),
+      })
+      const saved = (await putResp.json()) as Settings
+      setState((current) => (current ? { ...current, settings: saved } : current))
+    },
+    []
+  )
 
   React.useEffect(() => {
     if (!loginSession) return
@@ -160,184 +197,203 @@ function App() {
         window.clearInterval(timer)
         setLoginSession('')
         setQrURL('')
-        setStatusMessage('微信登录成功')
+        if (data.account_id && pendingRuleIDs.length > 0) {
+          await bindRulesAfterLogin(data.account_id as string, pendingRuleIDs)
+          setPendingRuleIDs([])
+        }
         await loadState()
+        setStatusMessage('微信配置创建成功')
       }
     }, 2500)
     return () => window.clearInterval(timer)
-  }, [loginSession, loadState])
-
-  const selectedRule = state?.settings.rules.find((rule) => rule.id === selectedRuleId) ?? state?.settings.rules[0]
-  const activeAccount = state?.accounts.find((account) => account.id === state.settings.active_account_id)
-  const selectedBindingAccountId = bindingAccountId || state?.settings.active_account_id || state?.accounts[0]?.id || ''
-  const boundRuleIds = state?.settings.account_rules[selectedBindingAccountId] ?? []
-  const selectedPreviewAccountId = previewAccountId || state?.settings.active_account_id || state?.accounts[0]?.id || ''
-
-  React.useEffect(() => {
-    if (!selectedRule) return
-    setJsonDrafts({
-      headers: JSON.stringify(selectedRule.target.headers ?? {}, null, 2),
-      query: JSON.stringify(selectedRule.target.query ?? {}, null, 2),
-    })
-  }, [selectedRule?.id])
-
-  React.useEffect(() => {
-    setPreviewResult(null)
-    setPreviewError('')
-  }, [selectedRule?.id])
+  }, [bindRulesAfterLogin, loadState, loginSession, pendingRuleIDs])
 
   if (!state) return <div className='loading'>Loading…</div>
 
-  const filteredRules = [...state.settings.rules]
-    .filter((rule) => {
-      if (ruleFilter === 'enabled') return rule.enabled
-      if (ruleFilter === 'disabled') return !rule.enabled
-      return true
-    })
-    .filter((rule) => {
-      const term = ruleSearch.trim().toLowerCase()
-      if (!term) return true
-      return [rule.name, rule.id, rule.description, rule.match.pattern, rule.target.url_template]
-        .join(' ')
-        .toLowerCase()
-        .includes(term)
-    })
-    .sort((a, b) => {
-      switch (ruleSort) {
-        case 'method':
-          return a.target.method.localeCompare(b.target.method)
-        case 'match':
-          return `${a.match.mode}:${a.match.pattern}`.localeCompare(`${b.match.mode}:${b.match.pattern}`)
-        case 'status':
-          return Number(b.enabled) - Number(a.enabled) || a.name.localeCompare(b.name)
-        case 'name':
-        default:
-          return a.name.localeCompare(b.name)
-      }
-    })
+  const filteredRules = state.settings.rules.filter((rule) => {
+    const term = ruleSearch.trim().toLowerCase()
+    if (!term) return true
+    return [rule.name, rule.id, rule.description, rule.match.pattern, rule.target.url_template]
+      .join(' ')
+      .toLowerCase()
+      .includes(term)
+  })
 
-  const updateSettings = (next: Settings) => setState({ ...state, settings: next })
-
-  const updateRule = (patch: Partial<Rule>) => {
-    if (!selectedRule) return
-    updateSettings({
-      ...state.settings,
-      rules: state.settings.rules.map((rule) => (rule.id === selectedRule.id ? { ...rule, ...patch } : rule)),
+  const persistSettings = async (nextSettings: Settings) => {
+    const resp = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nextSettings),
     })
+    const data = (await resp.json()) as Settings
+    setState((current) => (current ? { ...current, settings: data } : current))
+    return data
   }
 
-  const updateRuleNested = <K extends keyof Rule>(key: K, value: Rule[K]) => {
-    updateRule({ [key]: value } as Partial<Rule>)
+  const openCreateRule = () => {
+    const next = emptyRule()
+    setRuleDraft(next)
+    setRuleJsonDrafts({
+      headers: JSON.stringify(next.target.headers, null, 2),
+      query: JSON.stringify(next.target.query, null, 2),
+    })
+    setRulePreviewText('你好')
+    setPreviewResult(null)
+    setPreviewError('')
+    setRuleStep(1)
+    setRuleModalOpen(true)
   }
 
-  const saveSettings = async () => {
-    setSaving(true)
+  const openEditRule = (rule: Rule) => {
+    setRuleDraft(structuredClone(rule))
+    setRuleJsonDrafts({
+      headers: JSON.stringify(rule.target.headers ?? {}, null, 2),
+      query: JSON.stringify(rule.target.query ?? {}, null, 2),
+    })
+    setPreviewResult(null)
+    setPreviewError('')
+    setRuleStep(1)
+    setRuleModalOpen(true)
+  }
+
+  const saveRule = async () => {
     try {
-      const resp = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(state.settings),
-      })
-      const data = await resp.json()
-      setState({ ...state, settings: data })
-      setStatusMessage('配置已保存')
-    } finally {
-      setSaving(false)
+      const headers = JSON.parse(ruleJsonDrafts.headers) as Record<string, string>
+      const query = JSON.parse(ruleJsonDrafts.query) as Record<string, string>
+      const nextRule = { ...ruleDraft, target: { ...ruleDraft.target, headers, query } }
+      const exists = state.settings.rules.some((rule) => rule.id === nextRule.id)
+      const rules = exists
+        ? state.settings.rules.map((rule) => (rule.id === nextRule.id ? nextRule : rule))
+        : [...state.settings.rules, nextRule]
+      await persistSettings({ ...state.settings, rules })
+      setRuleModalOpen(false)
+      setStatusMessage(exists ? '规则已更新' : '规则已创建')
+    } catch {
+      setStatusMessage('Headers 或 Query 不是合法 JSON')
     }
   }
 
-  const startLogin = async () => {
-    const resp = await fetch('/api/login/start', { method: 'POST' })
-    const data = await resp.json()
-    setQrURL(`/api/login/qr?content=${encodeURIComponent(data.qr_code_url)}`)
-    setLoginSession(data.session_key)
-    setStatusMessage('请使用微信扫码登录')
-  }
-
-  const startRuntime = async () => {
-    await fetch('/api/runtime/start', { method: 'POST' })
-    await loadState()
-    setStatusMessage('中继已启动')
-  }
-
-  const stopRuntime = async () => {
-    await fetch('/api/runtime/stop', { method: 'POST' })
-    await loadState()
-    setStatusMessage('中继已停止')
-  }
-
-  const addRule = () => {
-    const next = emptyRule()
-    updateSettings({ ...state.settings, rules: [...state.settings.rules, next] })
-    setSelectedRuleId(next.id)
-    setCurrentView('detail')
-    setStatusMessage('已新增规则')
-  }
-
-  const removeRule = () => {
-    if (!selectedRule) return
-    const rules = state.settings.rules.filter((rule) => rule.id !== selectedRule.id)
+  const deleteRule = async (ruleID: string) => {
+    const rules = state.settings.rules.filter((rule) => rule.id !== ruleID)
     const accountRules = Object.fromEntries(
       Object.entries(state.settings.account_rules).map(([accountID, ruleIDs]) => [
         accountID,
-        ruleIDs.filter((id) => id !== selectedRule.id),
+        ruleIDs.filter((id) => id !== ruleID),
       ])
     )
-    updateSettings({ ...state.settings, rules, account_rules: accountRules })
-    setSelectedRuleId(rules[0]?.id ?? '')
-    setStatusMessage('已删除规则')
-  }
-
-  const toggleRuleBinding = (accountID: string, ruleID: string, checked: boolean) => {
-    const existing = state.settings.account_rules[accountID] ?? []
-    const next = checked ? Array.from(new Set([...existing, ruleID])) : existing.filter((id) => id !== ruleID)
-    updateSettings({
-      ...state.settings,
-      account_rules: {
-        ...state.settings.account_rules,
-        [accountID]: next,
-      },
-    })
-  }
-
-  const applyJsonDraft = (kind: 'headers' | 'query') => {
-    if (!selectedRule) return
-    try {
-      const parsed = JSON.parse(jsonDrafts[kind]) as Record<string, string>
-      updateRuleNested('target', { ...selectedRule.target, [kind]: parsed })
-      setStatusMessage(`${kind} 已应用`)
-    } catch {
-      setStatusMessage(`${kind} JSON 格式错误，未保存`)
-    }
+    await persistSettings({ ...state.settings, rules, account_rules: accountRules })
+    setStatusMessage('规则已删除')
   }
 
   const runPreview = async () => {
-    if (!selectedRule) return
     setPreviewLoading(true)
     setPreviewResult(null)
     setPreviewError('')
     try {
+      const headers = JSON.parse(ruleJsonDrafts.headers) as Record<string, string>
+      const query = JSON.parse(ruleJsonDrafts.query) as Record<string, string>
       const resp = await fetch('/api/rules/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          rule: selectedRule,
-          account_id: selectedPreviewAccountId,
-          user_id: previewUserId,
-          text: previewText,
+          rule: { ...ruleDraft, target: { ...ruleDraft.target, headers, query } },
+          account_id: rulePreviewAccountId,
+          user_id: rulePreviewUserId,
+          text: rulePreviewText,
         }),
       })
       const data = await resp.json()
       setPreviewResult((data.result as PreviewResult) ?? null)
       setPreviewError((data.error as string) ?? '')
-      setStatusMessage(data.ok ? '规则调试完成' : '规则调试返回错误')
     } finally {
       setPreviewLoading(false)
     }
   }
 
+  const openCreateConfig = () => {
+    setEditingAccountId('')
+    setConfigDraft({
+      base_url: state.settings.weixin.base_url,
+      bot_type: state.settings.weixin.bot_type,
+      route_tag: state.settings.weixin.route_tag,
+      rule_ids: [],
+    })
+    setConfigStep(1)
+    setQrURL('')
+    setLoginSession('')
+    setConfigModalOpen(true)
+  }
+
+  const openEditConfig = (account: Account) => {
+    setEditingAccountId(account.id)
+    setConfigDraft({
+      base_url: account.raw_id ? state.settings.weixin.base_url : state.settings.weixin.base_url,
+      bot_type: state.settings.weixin.bot_type,
+      route_tag: state.settings.weixin.route_tag,
+      rule_ids: state.settings.account_rules[account.id] ?? [],
+    })
+    setConfigStep(1)
+    setQrURL('')
+    setLoginSession('')
+    setConfigModalOpen(true)
+  }
+
+  const saveConfigBindings = async () => {
+    if (!editingAccountId) return
+    const nextSettings: Settings = {
+      ...state.settings,
+      account_rules: {
+        ...state.settings.account_rules,
+        [editingAccountId]: configDraft.rule_ids,
+      },
+    }
+    await persistSettings(nextSettings)
+    setConfigModalOpen(false)
+    setStatusMessage('微信配置已更新')
+  }
+
+  const startConfigLogin = async () => {
+    const nextSettings: Settings = {
+      ...state.settings,
+      weixin: {
+        ...state.settings.weixin,
+        base_url: configDraft.base_url,
+        bot_type: configDraft.bot_type,
+        route_tag: configDraft.route_tag,
+      },
+    }
+    await persistSettings(nextSettings)
+    setPendingRuleIDs(configDraft.rule_ids)
+    const resp = await fetch('/api/login/start', { method: 'POST' })
+    const data = await resp.json()
+    setQrURL(`/api/login/qr?content=${encodeURIComponent(data.qr_code_url)}`)
+    setLoginSession(data.session_key as string)
+    setConfigStep(3)
+    setStatusMessage('请扫码完成微信配置绑定')
+  }
+
+  const setAccountOnline = async (accountID: string) => {
+    const nextSettings = { ...state.settings, active_account_id: accountID }
+    await persistSettings(nextSettings)
+    await fetch('/api/runtime/start', { method: 'POST' })
+    await loadState()
+    setStatusMessage('微信配置已上线')
+  }
+
+  const setAccountOffline = async () => {
+    await fetch('/api/runtime/stop', { method: 'POST' })
+    await loadState()
+    setStatusMessage('微信配置已下线')
+  }
+
+  const toggleConfigRule = (ruleID: string, checked: boolean) => {
+    const current = configDraft.rule_ids
+    const next = checked ? Array.from(new Set([...current, ruleID])) : current.filter((id) => id !== ruleID)
+    setConfigDraft((draft) => ({ ...draft, rule_ids: next }))
+  }
+
   return (
-    <div className='workspace'>
+    <div className='workspace compact-shell'>
       <aside className='sidebar'>
         <div className='sidebar-brand'>
           <div className='sidebar-logo'>
@@ -350,382 +406,387 @@ function App() {
         </div>
 
         <nav className='sidebar-nav'>
-          <div className='sidebar-nav-title'>导航</div>
+          <button className={`sidebar-nav-item ${currentView === 'rules' ? 'active' : ''}`} onClick={() => setCurrentView('rules')}>
+            <DatabaseZap size={16} />
+            API 规则
+          </button>
           <button className={`sidebar-nav-item ${currentView === 'weixin' ? 'active' : ''}`} onClick={() => setCurrentView('weixin')}>
             <Settings2 size={16} />
             微信配置
           </button>
-          <button className={`sidebar-nav-item ${currentView === 'bindings' ? 'active' : ''}`} onClick={() => setCurrentView('bindings')}>
-            <UserRound size={16} />
-            账号绑定
-          </button>
-          <button className={`sidebar-nav-item ${currentView === 'rules' ? 'active' : ''}`} onClick={() => setCurrentView('rules')}>
-            <DatabaseZap size={16} />
-            规则表
-          </button>
-          <button className={`sidebar-nav-item ${currentView === 'detail' ? 'active' : ''}`} onClick={() => setCurrentView('detail')}>
-            <MessageSquareCode size={16} />
-            规则详情
-          </button>
         </nav>
-
-        <div className='sidebar-card compact'>
-          <div className='sidebar-section-title'>运行状态</div>
-          <StatusBadge live={state.runtime.running}>{state.runtime.running ? 'Relay Running' : 'Relay Stopped'}</StatusBadge>
-          <div className='sidebar-meta'>
-            <div>
-              <span>活动账号</span>
-              <strong>{activeAccount?.user_id || '未选择'}</strong>
-            </div>
-            <div>
-              <span>已绑定规则</span>
-              <strong>{(state.settings.account_rules[state.settings.active_account_id] || []).length}</strong>
-            </div>
-          </div>
-        </div>
       </aside>
 
-      <main className='main'>
-        <header className='page-header'>
-          <div>
-            <h1>任意 API Relay 控制台</h1>
-            <p>通过 OpenClaw 微信接口接入微信消息，并把它按规则转发到任意 HTTP API。</p>
-          </div>
-          <button className='button primary' onClick={saveSettings} disabled={saving}>
-            <Save size={16} />
-            {saving ? '保存中…' : '保存配置'}
-          </button>
-        </header>
+      <main className='main clean-main'>
+        {currentView === 'rules' ? (
+          <section className='list-page'>
+            <div className='list-toolbar'>
+              <input
+                className='toolbar-search'
+                placeholder='搜索规则名称、ID、匹配词或 URL'
+                value={ruleSearch}
+                onChange={(e) => setRuleSearch(e.target.value)}
+              />
+              <button className='button primary' onClick={openCreateRule}>
+                <Plus size={16} />
+                新建规则
+              </button>
+            </div>
 
-        <section className='summary-grid'>
-          <SummaryCard icon={<Cable size={16} />} title='微信通道' value={state.settings.weixin.base_url} note='通过 OpenClaw 微信接口长轮询收发消息' />
-          <SummaryCard icon={<UserRound size={16} />} title='账号' value={activeAccount?.user_id || '未绑定微信'} note='先扫码登录，再选择活动账号' />
-          <SummaryCard icon={<DatabaseZap size={16} />} title='规则' value={`${state.settings.rules.length} 条`} note='每个微信账号可绑定不同规则集合' />
-        </section>
-
-        <div className='view-shell'>
-          {currentView === 'weixin' && (
-            <section className='view-grid single'>
-              <Card title='微信配置' description='这部分只管接微信，不碰你的业务 API。' titleHint='这里配置的是 OpenClaw 微信接口本身，不是你要转发的目标 API。通常先保持默认，能扫上微信之后再调细节。最常见错误是把自己的业务 API 地址填到这里。' action={<button className='button secondary' onClick={startLogin}><QrCode size={16} />开始扫码</button>}>
-                <div className='form-grid'>
-                  <Field label={<LabelWithHint label='Weixin Base URL' hint='OpenClaw 微信接口的服务地址。默认就是官方接口地址，除非你明确换了上游网关，否则不要改。示例：`https://ilinkai.weixin.qq.com`。常见错误：填成你自己的业务 API 地址，导致扫码和收消息都失败。' />}>
-                    <input value={state.settings.weixin.base_url} onChange={(e) => updateSettings({ ...state.settings, weixin: { ...state.settings.weixin, base_url: e.target.value } })} />
-                  </Field>
-                  <Field label={<LabelWithHint label='Bot Type' hint='二维码登录时带给微信接口的 bot_type。大多数场景保持默认即可，乱改可能导致登录流程不兼容。示例：`3`。常见错误：照着别的项目随手改成其他值。' />}>
-                    <input value={state.settings.weixin.bot_type} onChange={(e) => updateSettings({ ...state.settings, weixin: { ...state.settings.weixin, bot_type: e.target.value } })} />
-                  </Field>
-                  <Field label={<LabelWithHint label='Route Tag' hint='可选路由标签。只有你的上游接口明确要求 SKRouteTag 时才填，不知道就留空。示例：`gray-a`。常见错误：把它当作业务路由规则来用，实际上这里只影响微信接口侧路由。' />}>
-                    <input value={state.settings.weixin.route_tag} onChange={(e) => updateSettings({ ...state.settings, weixin: { ...state.settings.weixin, route_tag: e.target.value } })} />
-                  </Field>
-                  <Field label={<LabelWithHint label='Active Account' hint='当前运行中的微信账号。启动 Relay 时会使用这个账号去收消息和发消息。常见错误：已经扫码了，但没切换到正确账号就直接点启动。' />}>
-                    <select value={state.settings.active_account_id} onChange={(e) => updateSettings({ ...state.settings, active_account_id: e.target.value })}>
-                      <option value=''>选择一个账号</option>
-                      {state.accounts.map((account) => (
-                        <option key={account.id} value={account.id}>{account.id} / {account.user_id}</option>
-                      ))}
-                    </select>
-                  </Field>
-                </div>
-
-                {qrURL && (
-                  <div className='qr-panel'>
-                    <img src={qrURL} alt='WeChat QR' />
+            <div className='list-table'>
+              <div className='list-head rule-grid'>
+                <span>规则名称</span>
+                <span>匹配方式</span>
+                <span>目标接口</span>
+                <span>状态</span>
+                <span>操作</span>
+              </div>
+              {filteredRules.map((rule) => (
+                <div key={rule.id} className='list-row rule-grid'>
+                  <div className='title-col'>
+                    <strong>{rule.name}</strong>
+                    <span>{rule.id}</span>
                   </div>
-                )}
-              </Card>
-
-              <Card title='运行控制' description='扫码完成后，选择活动账号，再启动中继。' titleHint='Relay 启动后，会开始长轮询这个微信账号的新消息，并按账号绑定的规则转发给你的 HTTP API。' action={<StatusBadge live={state.runtime.running}>{state.runtime.running ? '运行中' : '已停止'}</StatusBadge>}>
-                <div className='action-row'>
-                  <button className='button primary' onClick={startRuntime}><CirclePlay size={16} />启动 Relay</button>
-                  <button className='button secondary' onClick={stopRuntime}><CircleStop size={16} />停止 Relay</button>
-                </div>
-                <div className='status-strip'>
-                  <CheckCircle2 size={16} />
-                  {statusMessage}
-                </div>
-              </Card>
-            </section>
-          )}
-
-          {currentView === 'bindings' && (
-            <section className='view-grid single'>
-              <Card title='账号绑定规则' description='一个微信账号可以绑定多条规则，不同账号也可以绑定不同规则。' titleHint='这是这套系统最关键的路由关系。收到某个账号的消息时，只会在这个账号已绑定的规则里继续匹配。常见错误是只创建了规则，却忘了绑定账号，结果消息完全不命中。'>
-                <div className='form-grid'>
-                  <Field label={<LabelWithHint label='选择微信账号' hint='先选一个微信账号，下面的勾选框才表示“这个账号可以使用哪些规则”。示例：账号 A 绑定订单查询和售后规则，账号 B 绑定知识库问答规则。' />} full>
-                    <select value={selectedBindingAccountId} onChange={(e) => setBindingAccountId(e.target.value)}>
-                      <option value=''>选择一个账号</option>
-                      {state.accounts.map((account) => (
-                        <option key={account.id} value={account.id}>{account.id} / {account.user_id}</option>
-                      ))}
-                    </select>
-                  </Field>
-                </div>
-
-                <div className='binding-list'>
-                  {state.settings.rules.map((rule) => {
-                    const checked = boundRuleIds.includes(rule.id)
-                    return (
-                      <label key={rule.id} className='binding-row'>
-                        <div>
-                          <strong>{rule.name}</strong>
-                          <span>{rule.description || rule.id}</span>
-                        </div>
-                        <input type='checkbox' checked={checked} onChange={(e) => toggleRuleBinding(selectedBindingAccountId, rule.id, e.target.checked)} disabled={!selectedBindingAccountId} />
-                      </label>
-                    )
-                  })}
-                </div>
-              </Card>
-            </section>
-          )}
-
-          {currentView === 'rules' && (
-            <section className='view-grid single'>
-              <Card title='规则表' description='这里是规则总表。先建规则，再绑定到具体微信账号。' titleHint='规则负责定义“什么消息会命中”“命中后请求哪个 API”“如何把响应回给微信”。是否实际生效，还要看账号绑定关系。建议优先按业务能力拆规则，而不是按技术接口名拆规则。' action={<button className='button secondary' onClick={addRule}><Plus size={16} />新建规则</button>}>
-                <div className='table-toolbar'>
-                  <input className='toolbar-search' placeholder='搜索规则名称、ID、URL 或匹配词' value={ruleSearch} onChange={(e) => setRuleSearch(e.target.value)} />
-                  <select value={ruleFilter} onChange={(e) => setRuleFilter(e.target.value as 'all' | 'enabled' | 'disabled')}>
-                    <option value='all'>全部状态</option>
-                    <option value='enabled'>仅启用</option>
-                    <option value='disabled'>仅停用</option>
-                  </select>
-                  <select value={ruleSort} onChange={(e) => setRuleSort(e.target.value as 'name' | 'method' | 'match' | 'status')}>
-                    <option value='name'>按名称</option>
-                    <option value='method'>按方法</option>
-                    <option value='match'>按匹配</option>
-                    <option value='status'>按状态</option>
-                  </select>
-                  <div className='table-meta'>共 {filteredRules.length} 条</div>
-                </div>
-                <div className='rules-table'>
-                  <div className='rules-table-head'>
-                    <span>名称</span>
-                    <span>匹配</span>
-                    <span>方法</span>
-                    <span>状态</span>
+                  <span>{rule.match.mode} / {rule.match.pattern || '*'}</span>
+                  <span className='truncate-cell'>{rule.target.method} {rule.target.url_template || '(未填写)'}</span>
+                  <StatusBadge live={rule.enabled}>{rule.enabled ? '启用' : '停用'}</StatusBadge>
+                  <div className='row-actions'>
+                    <button className='button secondary' onClick={() => openEditRule(rule)}>编辑</button>
+                    <button className='button ghost-danger' onClick={() => void deleteRule(rule.id)}>删除</button>
                   </div>
-                  {filteredRules.map((rule) => (
-                    <button
-                      key={rule.id}
-                      className={`rules-table-row ${selectedRule?.id === rule.id ? 'selected' : ''}`}
-                      onClick={() => {
-                        setSelectedRuleId(rule.id)
-                        setCurrentView('detail')
-                      }}
-                    >
-                      <div className='title-col'>
-                        <strong>{rule.name}</strong>
-                        <span>{rule.id}</span>
-                      </div>
-                      <span>{rule.match.mode} / {rule.match.pattern || '*'}</span>
-                      <span>{rule.target.method}</span>
-                      <StatusBadge live={rule.enabled}>{rule.enabled ? '启用' : '停用'}</StatusBadge>
-                    </button>
-                  ))}
-                  {filteredRules.length === 0 ? <div className='empty-state'>没有符合当前筛选条件的规则。</div> : null}
                 </div>
-              </Card>
-            </section>
-          )}
+              ))}
+              {filteredRules.length === 0 ? <div className='empty-state'>还没有规则。先点右上角“新建规则”。</div> : null}
+            </div>
+          </section>
+        ) : (
+          <section className='list-page'>
+            <div className='list-toolbar'>
+              <div className='toolbar-note'>这里的“微信配置”实际对应一个已经扫码绑定完成的微信账号。</div>
+              <button className='button primary' onClick={openCreateConfig}>
+                <Plus size={16} />
+                新建配置
+              </button>
+            </div>
 
-          {currentView === 'detail' && (
-            <section className='view-grid detail'>
-              <section className='column'>
-                {selectedRule ? (
-                  <>
-                    <Card title='规则基本信息' description='规则本身只定义如何匹配与如何请求。它是否生效，由账号绑定关系决定。' titleHint='先把这部分想成“路由规则”。先匹配，再请求上游，最后把响应套进回复模板。最常见的设计失误是第一条规则就用 all，导致后面的规则永远匹配不到。' action={<button className='button danger' onClick={removeRule}><Trash2 size={16} />删除规则</button>}>
-                      <div className='form-grid'>
-                        <Field label={<LabelWithHint label='Rule ID' hint='规则的稳定标识。绑定关系和后续配置会引用它，已经上线后不要频繁改。示例：`order-query`、`kb-chat`。常见错误：用中文、空格或临时名字，后面维护很乱。' />}><input value={selectedRule.id} onChange={(e) => updateRule({ id: e.target.value })} /></Field>
-                        <Field label={<LabelWithHint label='Rule Name' hint='给人看的名称。尽量写得像“订单查询”“客服转人工”这种用途名，而不是技术名。示例：`售后工单查询`。' />}><input value={selectedRule.name} onChange={(e) => updateRule({ name: e.target.value })} /></Field>
-                        <Field label={<LabelWithHint label='Enabled' hint='规则总开关。这里关掉后，即使账号仍然绑定了它，也不会再命中。常见错误：以为勾选了账号绑定就一定生效，但规则本身可能仍是停用。' />}>
-                          <select value={String(selectedRule.enabled)} onChange={(e) => updateRule({ enabled: e.target.value === 'true' })}>
-                            <option value='true'>启用</option>
-                            <option value='false'>停用</option>
-                          </select>
-                        </Field>
-                        <Field label={<LabelWithHint label='Match Mode' hint='决定如何判断用户消息是否命中这条规则。all 表示任何消息都命中，prefix 适合命令式消息，regex 适合复杂匹配。示例：客服命令常用 prefix，自然语言关键词常用 contains。' />}>
-                          <select value={selectedRule.match.mode} onChange={(e) => updateRuleNested('match', { ...selectedRule.match, mode: e.target.value })}>
-                            <option value='all'>all</option>
-                            <option value='prefix'>prefix</option>
-                            <option value='contains'>contains</option>
-                            <option value='exact'>exact</option>
-                            <option value='regex'>regex</option>
-                          </select>
-                        </Field>
-                        <Field label={<LabelWithHint label='Match Pattern' hint='匹配词本体。比如 prefix 模式下填 `/help`，contains 模式下填 `退款`，regex 模式下填正则表达式。all 模式可以留空。常见错误：用了 prefix 却没带前缀词，导致永远不命中。' />} full>
-                          <input value={selectedRule.match.pattern} onChange={(e) => updateRuleNested('match', { ...selectedRule.match, pattern: e.target.value })} />
-                        </Field>
-                        <Field label={<LabelWithHint label='Description' hint='写给团队自己看的补充说明。建议记清楚这个规则要打哪个系统、回什么内容、有没有特殊限制。' />} full>
-                          <textarea value={selectedRule.description} onChange={(e) => updateRule({ description: e.target.value })} />
-                        </Field>
-                      </div>
-                    </Card>
-
-                    <Card title='HTTP 请求' description='URL / Method / Timeout 这些是请求骨架。' titleHint='这里定义的是转发到你自己 API 的方式。URL、Method、Header、Body 都支持模板变量，不是死字符串。最常见错误是 URL 对了，但 Header 或 Body 没按上游接口要求写。'>
-                      <div className='form-grid'>
-                        <Field label={<LabelWithHint label='Method' hint='上游 API 的 HTTP 方法，常见是 GET 或 POST。建议直接按你的接口文档填写大写值。常见错误：后端要求 POST，但这里写成 GET。' />}><input value={selectedRule.target.method} onChange={(e) => updateRuleNested('target', { ...selectedRule.target, method: e.target.value })} /></Field>
-                        <Field label={<LabelWithHint label='Timeout (ms)' hint='请求上游 API 的超时时间，单位毫秒。超时太短容易误判失败，太长会拖慢微信回复。示例：`5000` 或 `15000`。' />}><input type='number' value={selectedRule.target.timeout_ms} onChange={(e) => updateRuleNested('target', { ...selectedRule.target, timeout_ms: Number(e.target.value) })} /></Field>
-                        <Field label={<LabelWithHint label='URL Template' hint='目标 API 地址。支持模板变量，比如把用户消息里的内容拼进 URL、Query 或路径。示例：`https://api.example.com/v1/query`。常见错误：少写协议头、路径拼错、把 query 写进 body。' />} full><input value={selectedRule.target.url_template} onChange={(e) => updateRuleNested('target', { ...selectedRule.target, url_template: e.target.value })} /></Field>
-                        <Field label={<LabelWithHint label='Skip TLS Verify' hint='跳过 HTTPS 证书校验。只建议在内网自签名证书调试时打开，正式环境尽量保持 false。常见错误：线上为了省事长期打开。' />}>
-                          <select value={String(selectedRule.target.insecure_skip_tls)} onChange={(e) => updateRuleNested('target', { ...selectedRule.target, insecure_skip_tls: e.target.value === 'true' })}>
-                            <option value='false'>false</option>
-                            <option value='true'>true</option>
-                          </select>
-                        </Field>
-                      </div>
-                    </Card>
-                  </>
-                ) : (
-                  <Card title='没有规则' description='先新建一条规则。'>
-                    <button className='button primary' onClick={addRule}><Plus size={16} />新建第一条规则</button>
-                  </Card>
-                )}
-              </section>
-
-              <section className='column'>
-                {selectedRule ? (
-                  <>
-                    <Card title='Headers / Query' description='用 VS Code 风格编辑器编辑 JSON，失焦时应用。' titleHint='Headers 会变成 HTTP 请求头，Query 会拼到 URL 参数里。值也支持模板变量。这里要求是标准 JSON 对象。最常见错误是漏了双引号、末尾多逗号，导致 JSON 解析失败。'>
-                      <div className='editor-grid'>
-                        <div>
-                          <SectionLabel title='Headers JSON' />
-                          <CodeEditor value={jsonDrafts.headers} language='json' onChange={(value) => setJsonDrafts((current) => ({ ...current, headers: value }))} onBlur={() => applyJsonDraft('headers')} />
-                        </div>
-                        <div>
-                          <SectionLabel title='Query JSON' />
-                          <CodeEditor value={jsonDrafts.query} language='json' onChange={(value) => setJsonDrafts((current) => ({ ...current, query: value }))} onBlur={() => applyJsonDraft('query')} />
-                        </div>
-                      </div>
-                    </Card>
-
-                    <Card title='Body / Response Template' description='左边发上游，右边决定回微信什么。' titleHint='Body Template 是发给你 API 的请求体；Response Template 是收到 API 响应后，最终发回微信的文本模板。最常见错误是上游返回 JSON，但回复模板仍只写 `.Response.body`，导致回给微信的是整段原始 JSON。'>
-                      <div className='editor-grid'>
-                        <div>
-                          <SectionLabel title='Body Template' />
-                          <CodeEditor value={selectedRule.target.body_template} language='json' onChange={(value) => updateRuleNested('target', { ...selectedRule.target, body_template: value })} />
-                        </div>
-                        <div>
-                          <SectionLabel title='Response Template' />
-                          <CodeEditor value={selectedRule.response.template} language='handlebars' onChange={(value) => updateRuleNested('response', { ...selectedRule.response, template: value })} />
-                        </div>
-                      </div>
-                    </Card>
-
-                    <Card title='当前关系' description='当前编辑的规则会被哪些账号使用，一眼看清。' titleHint='这里只是查看关系，不是修改关系。真正的绑定操作在“账号绑定”页面完成。'>
-                      <div className='relation-list'>
-                        {state.accounts.map((account) => {
-                          const using = (state.settings.account_rules[account.id] ?? []).includes(selectedRule.id)
-                          return (
-                            <div key={account.id} className='relation-row'>
-                              <div>
-                                <strong>{account.user_id}</strong>
-                                <span>{account.id}</span>
-                              </div>
-                              <div className='relation-state'>
-                                <ChevronRight size={14} />
-                                <StatusBadge live={using}>{using ? '已绑定' : '未绑定'}</StatusBadge>
-                              </div>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </Card>
-
-                    <Card title='模板上下文' description='这是当前规则可用的模板变量。' titleHint='这些变量可以在 URL、Header、Body、Response Template 里使用。写模板时先看这里，别自己猜字段名。示例：`{{ .Message.text }}`、`{{ .Response.json.answer }}`。'>
-                      <CodePreview />
-                    </Card>
-
-                    <Card title='规则调试' description='用一个样例消息实际请求上游，直接看渲染后的请求与最终回微信文本。' titleHint='这是实际调试，不是静态预览。点击后会真的请求你的上游 API，所以建议先用测试环境地址和测试数据。常见排查顺序：先看 request body，再看 response body，最后看 rendered reply。' action={<button className='button primary' onClick={runPreview} disabled={previewLoading || !selectedPreviewAccountId}><CirclePlay size={16} />{previewLoading ? '调试中…' : '运行调试'}</button>}>
-                      <div className='form-grid'>
-                        <Field label={<LabelWithHint label='调试账号' hint='决定本次调试使用哪个微信账号的上下文信息，例如账号 ID、用户 ID、绑定关系。常见错误：规则明明只绑定在账号 A，却拿账号 B 来调试。' />}>
-                          <select value={selectedPreviewAccountId} onChange={(e) => setPreviewAccountId(e.target.value)}>
-                            <option value=''>选择一个账号</option>
-                            {state.accounts.map((account) => (
-                              <option key={account.id} value={account.id}>{account.id} / {account.user_id}</option>
-                            ))}
-                          </select>
-                        </Field>
-                        <Field label={<LabelWithHint label='发送方 User ID' hint='模拟消息发送者。你可以把它理解成“是谁给这个微信发了这条消息”。需要做会话隔离时，这个值很重要。示例：`user-1001@im.wechat`。' />}>
-                          <input value={previewUserId} onChange={(e) => setPreviewUserId(e.target.value)} />
-                        </Field>
-                        <Field label={<LabelWithHint label='样例消息' hint='模拟用户真正发到微信里的文本内容。规则匹配、模板渲染、上游请求体都会用到它。示例：`查询订单 12345`、`帮我总结今天的日报`。' />} full>
-                          <textarea value={previewText} onChange={(e) => setPreviewText(e.target.value)} />
-                        </Field>
-                      </div>
-
-                      {previewError ? <div className='error-strip'>{previewError}</div> : null}
-
-                      {previewResult ? (
-                        <div className='preview-stack'>
-                          <div className='preview-meta'>
-                            <span>{previewResult.request_method}</span>
-                            <span>{previewResult.request_url}</span>
-                            <span>HTTP {previewResult.status_code || 'ERR'}</span>
-                            <span>{previewResult.duration_ms} ms</span>
-                          </div>
-
-                          <div className='editor-grid'>
-                            <div>
-                              <SectionLabel title='Rendered Request Body' />
-                              <pre className='code-preview'>{previewResult.request_body || '(empty)'}</pre>
-                            </div>
-                            <div>
-                              <SectionLabel title='Rendered Reply' />
-                              <pre className='code-preview'>{previewResult.reply || '(empty)'}</pre>
-                            </div>
-                          </div>
-
-                          <div className='editor-grid'>
-                            <div>
-                              <SectionLabel title='Request Headers' />
-                              <pre className='code-preview'>{JSON.stringify(previewResult.request_headers ?? {}, null, 2)}</pre>
-                            </div>
-                            <div>
-                              <SectionLabel title='Response Body' />
-                              <pre className='code-preview'>{previewResult.response_body || '(empty)'}</pre>
-                            </div>
-                          </div>
-                        </div>
-                      ) : null}
-                    </Card>
-                  </>
-                ) : null}
-              </section>
-            </section>
-          )}
-        </div>
+            <div className='list-table'>
+              <div className='list-head config-grid'>
+                <span>微信账号</span>
+                <span>绑定规则</span>
+                <span>状态</span>
+                <span>操作</span>
+              </div>
+              {state.accounts.map((account) => {
+                const isOnline = state.runtime.running && state.runtime.account_id === account.id
+                const boundRules = state.settings.account_rules[account.id] ?? []
+                return (
+                  <div key={account.id} className='list-row config-grid'>
+                    <div className='title-col'>
+                      <strong>{account.user_id}</strong>
+                      <span>{account.id}</span>
+                    </div>
+                    <span>{boundRules.length} 条规则</span>
+                    <StatusBadge live={isOnline}>{isOnline ? '在线' : '离线'}</StatusBadge>
+                    <div className='row-actions'>
+                      <button className='button secondary' onClick={() => openEditConfig(account)}>编辑</button>
+                      {isOnline ? (
+                        <button className='button ghost-danger' onClick={() => void setAccountOffline()}>下线</button>
+                      ) : (
+                        <button className='button primary' onClick={() => void setAccountOnline(account.id)}>上线</button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+              {state.accounts.length === 0 ? <div className='empty-state'>还没有微信配置。先点右上角“新建配置”并扫码绑定。</div> : null}
+            </div>
+          </section>
+        )}
       </main>
+
+      {ruleModalOpen ? (
+        <Modal title={ruleDraft.id && state.settings.rules.some((rule) => rule.id === ruleDraft.id) ? '编辑规则' : '新建规则'} onClose={() => setRuleModalOpen(false)}>
+          <StepTabs
+            steps={[
+              { id: 1, label: '基本信息' },
+              { id: 2, label: '请求配置' },
+              { id: 3, label: '回复与调试' },
+            ]}
+            current={ruleStep}
+            onChange={(step) => setRuleStep(step as RuleStep)}
+          />
+
+          {ruleStep === 1 ? (
+            <div className='modal-section'>
+              <div className='form-grid'>
+                <Field label={<LabelWithHint label='Rule ID' hint='规则的稳定标识。示例：`order-query`。已经绑定到账号后不要频繁改。' />}>
+                  <input value={ruleDraft.id} onChange={(e) => setRuleDraft((draft) => ({ ...draft, id: e.target.value }))} />
+                </Field>
+                <Field label={<LabelWithHint label='Rule Name' hint='给人看的名称。建议用业务名，例如“售后工单查询”。' />}>
+                  <input value={ruleDraft.name} onChange={(e) => setRuleDraft((draft) => ({ ...draft, name: e.target.value }))} />
+                </Field>
+                <Field label={<LabelWithHint label='Enabled' hint='规则总开关。关闭后，即使微信配置仍然绑定了它，也不会命中。' />}>
+                  <select value={String(ruleDraft.enabled)} onChange={(e) => setRuleDraft((draft) => ({ ...draft, enabled: e.target.value === 'true' }))}>
+                    <option value='true'>启用</option>
+                    <option value='false'>停用</option>
+                  </select>
+                </Field>
+                <Field label={<LabelWithHint label='Match Mode' hint='建议按业务使用：命令式文本用 prefix，关键词命中用 contains，兜底规则才用 all。' />}>
+                  <select value={ruleDraft.match.mode} onChange={(e) => setRuleDraft((draft) => ({ ...draft, match: { ...draft.match, mode: e.target.value } }))}>
+                    <option value='all'>all</option>
+                    <option value='prefix'>prefix</option>
+                    <option value='contains'>contains</option>
+                    <option value='exact'>exact</option>
+                    <option value='regex'>regex</option>
+                  </select>
+                </Field>
+                <Field label={<LabelWithHint label='Match Pattern' hint='示例：`/help`、`退款`、`^订单\\s+\\d+$`。all 模式可以留空。' />} full>
+                  <input value={ruleDraft.match.pattern} onChange={(e) => setRuleDraft((draft) => ({ ...draft, match: { ...draft.match, pattern: e.target.value } }))} />
+                </Field>
+                <Field label={<LabelWithHint label='Description' hint='写清楚这条规则是做什么的、请求哪个系统、是否有特殊返回格式。' />} full>
+                  <textarea value={ruleDraft.description} onChange={(e) => setRuleDraft((draft) => ({ ...draft, description: e.target.value }))} />
+                </Field>
+              </div>
+            </div>
+          ) : null}
+
+          {ruleStep === 2 ? (
+            <div className='modal-section'>
+              <div className='form-grid'>
+                <Field label={<LabelWithHint label='Method' hint='常见是 GET 或 POST。必须和你的上游接口文档一致。' />}>
+                  <input value={ruleDraft.target.method} onChange={(e) => setRuleDraft((draft) => ({ ...draft, target: { ...draft.target, method: e.target.value } }))} />
+                </Field>
+                <Field label={<LabelWithHint label='Timeout (ms)' hint='示例：5000 或 15000。太短容易误判失败，太长会拖慢微信回复。' />}>
+                  <input type='number' value={ruleDraft.target.timeout_ms} onChange={(e) => setRuleDraft((draft) => ({ ...draft, target: { ...draft.target, timeout_ms: Number(e.target.value) } }))} />
+                </Field>
+                <Field label={<LabelWithHint label='URL Template' hint='示例：`https://api.example.com/v1/query`。支持模板变量。' />} full>
+                  <input value={ruleDraft.target.url_template} onChange={(e) => setRuleDraft((draft) => ({ ...draft, target: { ...draft.target, url_template: e.target.value } }))} />
+                </Field>
+                <Field label={<LabelWithHint label='Skip TLS Verify' hint='只建议内网自签名证书调试时打开。正式环境尽量保持 false。' />}>
+                  <select value={String(ruleDraft.target.insecure_skip_tls)} onChange={(e) => setRuleDraft((draft) => ({ ...draft, target: { ...draft.target, insecure_skip_tls: e.target.value === 'true' } }))}>
+                    <option value='false'>false</option>
+                    <option value='true'>true</option>
+                  </select>
+                </Field>
+              </div>
+
+              <div className='editor-grid top-gap'>
+                <div>
+                  <SectionLabel title='Headers JSON' />
+                  <CodeEditor value={ruleJsonDrafts.headers} language='json' onChange={(value) => setRuleJsonDrafts((draft) => ({ ...draft, headers: value }))} />
+                </div>
+                <div>
+                  <SectionLabel title='Query JSON' />
+                  <CodeEditor value={ruleJsonDrafts.query} language='json' onChange={(value) => setRuleJsonDrafts((draft) => ({ ...draft, query: value }))} />
+                </div>
+              </div>
+
+              <div className='editor-grid top-gap'>
+                <div>
+                  <SectionLabel title='Body Template' />
+                  <CodeEditor value={ruleDraft.target.body_template} language='json' onChange={(value) => setRuleDraft((draft) => ({ ...draft, target: { ...draft.target, body_template: value } }))} />
+                </div>
+                <div>
+                  <SectionLabel title='Response Template' />
+                  <CodeEditor value={ruleDraft.response.template} language='handlebars' onChange={(value) => setRuleDraft((draft) => ({ ...draft, response: { ...draft.response, template: value } }))} />
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {ruleStep === 3 ? (
+            <div className='modal-section'>
+              <div className='form-grid'>
+                <Field label={<LabelWithHint label='调试账号' hint='用哪个微信配置的上下文来测试这条规则。' />}>
+                  <select value={rulePreviewAccountId} onChange={(e) => setRulePreviewAccountId(e.target.value)}>
+                    <option value=''>选择一个配置</option>
+                    {state.accounts.map((account) => (
+                      <option key={account.id} value={account.id}>{account.user_id}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label={<LabelWithHint label='发送方 User ID' hint='模拟是谁给微信发了这条消息。做会话隔离时很关键。' />}>
+                  <input value={rulePreviewUserId} onChange={(e) => setRulePreviewUserId(e.target.value)} />
+                </Field>
+                <Field label={<LabelWithHint label='样例消息' hint='示例：`查询订单 12345`。会参与规则匹配和模板渲染。' />} full>
+                  <textarea value={rulePreviewText} onChange={(e) => setRulePreviewText(e.target.value)} />
+                </Field>
+              </div>
+
+              <div className='modal-inline-actions'>
+                <button className='button secondary' onClick={runPreview} disabled={previewLoading || !rulePreviewAccountId}>
+                  <CirclePlay size={16} />
+                  {previewLoading ? '调试中…' : '运行调试'}
+                </button>
+              </div>
+
+              {previewError ? <div className='error-strip'>{previewError}</div> : null}
+
+              {previewResult ? (
+                <div className='preview-stack'>
+                  <div className='preview-meta'>
+                    <span>{previewResult.request_method}</span>
+                    <span>{previewResult.request_url}</span>
+                    <span>HTTP {previewResult.status_code || 'ERR'}</span>
+                    <span>{previewResult.duration_ms} ms</span>
+                  </div>
+                  <div className='editor-grid'>
+                    <div>
+                      <SectionLabel title='Rendered Request Body' />
+                      <pre className='code-preview'>{previewResult.request_body || '(empty)'}</pre>
+                    </div>
+                    <div>
+                      <SectionLabel title='Rendered Reply' />
+                      <pre className='code-preview'>{previewResult.reply || '(empty)'}</pre>
+                    </div>
+                  </div>
+                  <div>
+                    <SectionLabel title='Response Body' />
+                    <pre className='code-preview'>{previewResult.response_body || '(empty)'}</pre>
+                  </div>
+                </div>
+              ) : (
+                <CardHint text='建议排查顺序：先看请求体是否按预期渲染，再看上游返回体，最后看回复模板是否正确提取字段。' />
+              )}
+            </div>
+          ) : null}
+
+          <div className='modal-footer'>
+            <div className='modal-step-actions'>
+              {ruleStep > 1 ? <button className='button secondary' onClick={() => setRuleStep((step) => (step - 1) as RuleStep)}>上一步</button> : null}
+              {ruleStep < 3 ? <button className='button secondary' onClick={() => setRuleStep((step) => (step + 1) as RuleStep)}>下一步</button> : null}
+            </div>
+            <button className='button primary' onClick={() => void saveRule()}>
+              <Save size={16} />
+              保存规则
+            </button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {configModalOpen ? (
+        <Modal title={editingAccountId ? '编辑微信配置' : '新建微信配置'} onClose={() => setConfigModalOpen(false)}>
+          <StepTabs
+            steps={[
+              { id: 1, label: '接口参数' },
+              { id: 2, label: '绑定规则' },
+              { id: 3, label: '扫码绑定' },
+            ]}
+            current={configStep}
+            onChange={(step) => setConfigStep(step as ConfigStep)}
+          />
+
+          {configStep === 1 ? (
+            <div className='modal-section'>
+              <div className='form-grid'>
+                <Field label={<LabelWithHint label='Weixin Base URL' hint='默认一般是 `https://ilinkai.weixin.qq.com`。不要填成你自己的业务 API。' />}>
+                  <input value={configDraft.base_url} onChange={(e) => setConfigDraft((draft) => ({ ...draft, base_url: e.target.value }))} />
+                </Field>
+                <Field label={<LabelWithHint label='Bot Type' hint='大多数情况下保持默认值即可。常见值：`3`。' />}>
+                  <input value={configDraft.bot_type} onChange={(e) => setConfigDraft((draft) => ({ ...draft, bot_type: e.target.value }))} />
+                </Field>
+                <Field label={<LabelWithHint label='Route Tag' hint='只有你明确知道微信接口侧要做灰度或特殊路由时才填。' />} full>
+                  <input value={configDraft.route_tag} onChange={(e) => setConfigDraft((draft) => ({ ...draft, route_tag: e.target.value }))} />
+                </Field>
+              </div>
+            </div>
+          ) : null}
+
+          {configStep === 2 ? (
+            <div className='modal-section'>
+              <CardHint text='这里决定这个微信配置能命中哪些 API 规则。收到这个微信账号的消息时，只会在你勾选的规则里继续匹配。' />
+              <div className='binding-list top-gap'>
+                {state.settings.rules.map((rule) => {
+                  const checked = configDraft.rule_ids.includes(rule.id)
+                  return (
+                    <label key={rule.id} className='binding-row'>
+                      <div>
+                        <strong>{rule.name}</strong>
+                        <span>{rule.description || rule.id}</span>
+                      </div>
+                      <input type='checkbox' checked={checked} onChange={(e) => toggleConfigRule(rule.id, e.target.checked)} />
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          {configStep === 3 ? (
+            <div className='modal-section'>
+              {editingAccountId ? (
+                <CardHint text='当前是在编辑已存在的微信配置。这里只需要保存绑定规则，不需要重新扫码。' />
+              ) : (
+                <>
+                  <div className='modal-inline-actions'>
+                    <button className='button primary' onClick={() => void startConfigLogin()}>
+                      <QrCode size={16} />
+                      开始扫码绑定
+                    </button>
+                  </div>
+                  {qrURL ? (
+                    <div className='qr-panel top-gap'>
+                      <img src={qrURL} alt='WeChat QR' />
+                    </div>
+                  ) : (
+                    <CardHint text='先点击“开始扫码绑定”。扫码确认后，会自动创建一个新的微信配置，并套用你刚才选择的规则。' />
+                  )}
+                </>
+              )}
+            </div>
+          ) : null}
+
+          <div className='modal-footer'>
+            <div className='modal-step-actions'>
+              {configStep > 1 ? <button className='button secondary' onClick={() => setConfigStep((step) => (step - 1) as ConfigStep)}>上一步</button> : null}
+              {configStep < 3 ? <button className='button secondary' onClick={() => setConfigStep((step) => (step + 1) as ConfigStep)}>下一步</button> : null}
+            </div>
+            {editingAccountId ? (
+              <button className='button primary' onClick={() => void saveConfigBindings()}>
+                <Save size={16} />
+                保存配置
+              </button>
+            ) : null}
+          </div>
+        </Modal>
+      ) : null}
     </div>
   )
 }
 
-function Card({
-  title,
-  description,
-  titleHint,
-  action,
-  children,
+function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  return (
+    <div className='modal-backdrop'>
+      <section className='modal-shell'>
+        <div className='modal-header'>
+          <h2>{title}</h2>
+          <button className='icon-button' onClick={onClose}>
+            <X size={16} />
+          </button>
+        </div>
+        <div className='modal-body'>{children}</div>
+      </section>
+    </div>
+  )
+}
+
+function StepTabs({
+  steps,
+  current,
+  onChange,
 }: {
-  title: string
-  description?: string
-  titleHint?: string
-  action?: React.ReactNode
-  children: React.ReactNode
+  steps: Array<{ id: number; label: string }>
+  current: number
+  onChange: (step: number) => void
 }) {
   return (
-    <section className='card'>
-      <div className='card-header'>
-        <div>
-          <div className='title-row'>
-            <h2>{title}</h2>
-            {titleHint ? <HintBubble content={titleHint} /> : null}
-          </div>
-          {description ? <p>{description}</p> : null}
-        </div>
-        {action}
-      </div>
-      <div className='card-content'>{children}</div>
-    </section>
+    <div className='step-tabs'>
+      {steps.map((step) => (
+        <button key={step.id} className={`step-tab ${current === step.id ? 'active' : ''}`} onClick={() => onChange(step.id)}>
+          {step.id}. {step.label}
+        </button>
+      ))}
+    </div>
   )
 }
 
@@ -736,37 +797,6 @@ function Field({ label, full, children }: { label: React.ReactNode; full?: boole
       {children}
     </label>
   )
-}
-
-function StatusBadge({ live, children }: { live: boolean; children: React.ReactNode }) {
-  return <span className={`badge ${live ? 'live' : ''}`}>{children}</span>
-}
-
-function SummaryCard({
-  icon,
-  title,
-  value,
-  note,
-}: {
-  icon: React.ReactNode
-  title: string
-  value: string
-  note: string
-}) {
-  return (
-    <div className='summary-card'>
-      <div className='summary-icon'>{icon}</div>
-      <div>
-        <div className='summary-title'>{title}</div>
-        <div className='summary-value'>{value}</div>
-        <div className='summary-note'>{note}</div>
-      </div>
-    </div>
-  )
-}
-
-function SectionLabel({ title }: { title: string }) {
-  return <div className='section-label'>{title}</div>
 }
 
 function LabelWithHint({ label, hint }: { label: string; hint: string }) {
@@ -787,16 +817,31 @@ function HintBubble({ content }: { content: string }) {
   )
 }
 
+function StatusBadge({ live, children }: { live: boolean; children: React.ReactNode }) {
+  return <span className={`badge ${live ? 'live' : ''}`}>{children}</span>
+}
+
+function CardHint({ text }: { text: string }) {
+  return (
+    <div className='card-hint'>
+      <CheckCircle2 size={16} />
+      <span>{text}</span>
+    </div>
+  )
+}
+
+function SectionLabel({ title }: { title: string }) {
+  return <div className='section-label'>{title}</div>
+}
+
 function CodeEditor({
   value,
   language,
   onChange,
-  onBlur,
 }: {
   value: string
   language: string
   onChange: (value: string) => void
-  onBlur?: () => void
 }) {
   return (
     <div className='editor-shell'>
@@ -815,28 +860,8 @@ function CodeEditor({
           wordWrap: 'on',
         }}
         onChange={(next) => onChange(next ?? '')}
-        onMount={(editor) => {
-          editor.onDidBlurEditorText(() => onBlur?.())
-        }}
       />
     </div>
-  )
-}
-
-function CodePreview() {
-  return (
-    <pre className='code-preview'>{`{{ .Message.text }}
-{{ .Message.from }}
-{{ .Message.context_token }}
-{{ .Account.id }}
-{{ .Account.raw_id }}
-{{ .Account.user_id }}
-{{ .Now.rfc3339 }}
-
-{{ .Response.status_code }}
-{{ .Response.body }}
-{{ .Response.json }}
-{{ .Response.headers }}`}</pre>
   )
 }
 
