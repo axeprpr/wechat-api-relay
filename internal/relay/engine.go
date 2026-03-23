@@ -49,7 +49,7 @@ func (e *Engine) Reply(ctx context.Context, msg MessageContext) (string, string,
 		return "", "", fmt.Errorf("load settings: %w", err)
 	}
 
-	rule, err := selectRule(settings.Rules, msg.Text)
+	rule, err := selectRule(settings.EnabledRulesForAccount(msg.AccountID), msg.Text)
 	if err != nil {
 		return "", "", err
 	}

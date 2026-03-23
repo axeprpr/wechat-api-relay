@@ -38,6 +38,7 @@ type Settings struct {
 	Weixin          config.WeixinConfig `json:"weixin"`
 	ActiveAccountID string              `json:"active_account_id"`
 	Rules           []Rule              `json:"rules"`
+	AccountRules    map[string][]string `json:"account_rules"`
 }
 
 type Rule struct {
@@ -92,8 +93,9 @@ func (s *Store) LoadSettings(defaults config.Config) (Settings, error) {
 	defer s.mu.Unlock()
 
 	settings := Settings{
-		Weixin: defaults.Weixin,
-		Rules:  defaultRules(defaults),
+		Weixin:       defaults.Weixin,
+		Rules:        defaultRules(defaults),
+		AccountRules: map[string][]string{},
 	}
 	path := filepath.Join(s.root, "settings.json")
 	if err := readJSON(path, &settings); err != nil {
@@ -116,6 +118,9 @@ func (s *Store) LoadSettings(defaults config.Config) (Settings, error) {
 	}
 	if len(settings.Rules) == 0 {
 		settings.Rules = defaultRules(defaults)
+	}
+	if settings.AccountRules == nil {
+		settings.AccountRules = map[string][]string{}
 	}
 	return settings, nil
 }
@@ -309,6 +314,36 @@ func defaultRules(defaults config.Config) []Rule {
 			},
 		},
 	}
+}
+
+func (s Settings) EnabledRulesForAccount(accountID string) []Rule {
+	if len(s.Rules) == 0 {
+		return nil
+	}
+	boundIDs := s.AccountRules[accountID]
+	if len(boundIDs) == 0 {
+		var enabled []Rule
+		for _, rule := range s.Rules {
+			if rule.Enabled {
+				enabled = append(enabled, rule)
+			}
+		}
+		return enabled
+	}
+	allowed := make(map[string]struct{}, len(boundIDs))
+	for _, id := range boundIDs {
+		allowed[id] = struct{}{}
+	}
+	var out []Rule
+	for _, rule := range s.Rules {
+		if !rule.Enabled {
+			continue
+		}
+		if _, ok := allowed[rule.ID]; ok {
+			out = append(out, rule)
+		}
+	}
+	return out
 }
 
 func escapeJSON(s string) string {

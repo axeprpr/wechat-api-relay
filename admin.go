@@ -116,11 +116,14 @@ func (s *AdminServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if settings.Weixin.UserAgent == "" {
 			settings.Weixin.UserAgent = s.cfg.Weixin.UserAgent
 		}
-		if settings.Weixin.PollTimeout <= 0 {
-			settings.Weixin.PollTimeout = s.cfg.Weixin.PollTimeout
-		}
-		normalizeRules(&settings)
-		if err := s.store.SaveSettings(settings); err != nil {
+	if settings.Weixin.PollTimeout <= 0 {
+		settings.Weixin.PollTimeout = s.cfg.Weixin.PollTimeout
+	}
+	if settings.AccountRules == nil {
+		settings.AccountRules = map[string][]string{}
+	}
+	normalizeRules(&settings)
+	if err := s.store.SaveSettings(settings); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -183,6 +186,15 @@ func (s *AdminServer) handleLoginStatus(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		settings.ActiveAccountID = account.ID
+		if _, ok := settings.AccountRules[account.ID]; !ok {
+			var allEnabled []string
+			for _, rule := range settings.Rules {
+				if rule.Enabled {
+					allEnabled = append(allEnabled, rule.ID)
+				}
+			}
+			settings.AccountRules[account.ID] = allEnabled
+		}
 		_ = s.store.SaveSettings(settings)
 		resp["account_id"] = account.ID
 		resp["user_id"] = account.UserID
@@ -317,6 +329,9 @@ func (r *RelayRunner) Start(account store.Account) error {
 	}
 	if !hasEnabled {
 		return fmt.Errorf("at least one enabled rule is required")
+	}
+	if bound := settings.AccountRules[account.ID]; len(bound) == 0 {
+		return fmt.Errorf("no rules are bound to account %s", account.ID)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
