@@ -2,15 +2,41 @@
 
 [English](./README_EN.md)
 
-一个面向微信的通用 HTTP API 转发网关。它复用了 `@tencent-weixin/openclaw-weixin` 暴露出来的微信通讯协议，把微信收消息、扫码登录、长轮询收发消息这一层抽出来，再通过可配置规则把消息转发到任意 HTTP API。
+`wechat-api-relay` 是一个基于 OpenClaw 微信通道协议的通用接入网关。
 
-管理台 UI 采用 `shadcn-admin` 的控制台风格做了改造，核心场景是：
+它的核心思路不是“自己实现微信协议”，而是 **hook / 复用 `@tencent-weixin/openclaw-weixin` 这一套 OpenClaw 微信接口能力**，把其中已经跑通的：
+
+- 微信扫码登录
+- 会话上下文 token
+- 长轮询收消息
+- 回发微信消息
+
+这一层抽出来，变成一个可独立部署的中间件。
+
+然后你就可以在这个中间件里，把微信消息转发到 **任意 HTTP API**，而不只是大模型 API。
+
+管理台 UI 采用 `shadcn-admin` 风格重做，核心场景是：
 
 - 微信扫码登录
 - 选择活动账号
 - 配置任意 API 转发规则
 - 启停中继
 - 把接口响应回发给微信
+
+## 它适合做什么
+
+你可以把它理解成：
+
+`微信 <-> OpenClaw 微信接口 <-> wechat-api-relay <-> 任意业务 API`
+
+适用场景包括：
+
+- 把微信接到你自己的大模型网关
+- 把微信接到知识库、搜索、工单、审批、CRM、告警系统
+- 把微信变成企业内部 HTTP 服务的统一入口
+- 用规则把不同前缀消息路由到不同 API
+
+它不是一个“只会转 OpenAI 接口”的小工具，而是一个 **可规则化配置的微信 API Relay**。
 
 ## 核心能力
 
@@ -65,6 +91,23 @@ http://127.0.0.1:3222/
 3. 选择活动账号。
 4. 配置一条或多条 API 转发规则。
 5. 点击 `Start Relay`。
+
+## 工作原理
+
+整体链路：
+
+1. 微信用户给 bot 发消息
+2. `wechat-api-relay` 通过 OpenClaw 微信接口长轮询收到消息
+3. 中继按规则匹配当前消息
+4. 命中的规则把消息渲染成 HTTP 请求
+5. 请求发到你的任意 API
+6. 上游响应再经过模板映射，回发到微信
+
+所以它本质上是：
+
+- 下游：对接微信
+- 上游：对接任意 HTTP API
+- 中间：做消息路由、模板渲染、响应映射
 
 ## 规则模型
 
@@ -128,8 +171,15 @@ http://127.0.0.1:3222/
 
 ## OpenAI 兼容接口预置规则
 
-默认会生成一条 `OpenAI Compatible LLM` 规则，方便你开箱即用接大模型。  
-但它只是一个默认样例，不是系统唯一形态。你可以把它删掉，换成任意 REST API。
+默认会生成一条 `OpenAI Compatible LLM` 规则，方便你开箱即用接大模型。
+
+但它只是一个默认样例，不是系统唯一形态。你可以把它删掉，换成任意 REST API，比如：
+
+- `POST /chat`
+- `POST /workflow/run`
+- `POST /ticket/create`
+- `GET /search?q=...`
+- 企业内部任意网关接口
 
 ## 打包
 
@@ -143,8 +193,10 @@ make package VERSION=0.1.0
 
 产物：
 
+- `dist/wechat-api-relay` 原始 Linux 可执行文件
 - `dist/packages/*.deb`
 - `dist/packages/*.rpm`
+- `dist/packages/*linux_amd64.tar.gz`
 
 ## CI / Release
 

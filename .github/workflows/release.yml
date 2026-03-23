@@ -56,12 +56,14 @@ jobs:
           $(go env GOPATH)/bin/nfpm package --config packaging/nfpm.yaml --target dist/packages/wechat-api-relay_${VERSION}_linux_amd64.deb
           $(go env GOPATH)/bin/nfpm package --config packaging/nfpm.yaml --packager rpm --target dist/packages/wechat-api-relay-${VERSION}-1.x86_64.rpm
           tar -czf dist/packages/wechat-api-relay_${VERSION}_linux_amd64.tar.gz dist/wechat-api-relay web/dist README.md README_EN.md docs
+          cp dist/wechat-api-relay dist/packages/wechat-api-relay_${VERSION}_linux_amd64.bin
 
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           files: |
+            dist/packages/*.bin
             dist/packages/*.deb
             dist/packages/*.rpm
             dist/packages/*.tar.gz

@@ -2,7 +2,7 @@
 
 [简体中文](./README.md)
 
-A generic WeChat-to-HTTP relay gateway. It reuses the WeChat transport protocol exposed by `@tencent-weixin/openclaw-weixin`, then routes inbound WeChat messages to arbitrary HTTP APIs through configurable rules.
+A generic WeChat-to-HTTP relay gateway. It hooks into and reuses the WeChat transport protocol exposed by `@tencent-weixin/openclaw-weixin`, then routes inbound WeChat messages to arbitrary HTTP APIs through configurable rules.
 
 The admin UI is rebuilt in the visual direction of `shadcn-admin` and focuses on:
 
@@ -82,6 +82,7 @@ make package VERSION=0.1.0
 
 Artifacts:
 
+- `dist/wechat-api-relay` raw Linux binary
 - `dist/packages/*.deb`
 - `dist/packages/*.rpm`
 
@@ -94,3 +95,18 @@ Artifacts:
 
 - WeChat transport flow based on `@tencent-weixin/openclaw-weixin`
 - Admin UI visual direction inspired by `satnaing/shadcn-admin`
+## Positioning
+
+The intended architecture is:
+
+`WeChat <-> OpenClaw WeChat transport <-> wechat-api-relay <-> arbitrary HTTP APIs`
+
+This project is not limited to OpenAI-compatible models. The default LLM rule is only a starter preset. The relay is meant to be a generic WeChat ingress layer for:
+
+- internal tools
+- search endpoints
+- approval flows
+- ticket systems
+- workflow engines
+- knowledge APIs
+- custom business services
