@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"image/png"
 	"log"
 	"net/http"
 	"os"
@@ -39,10 +38,22 @@ type RelayRunner struct {
 	accountID string
 }
 
+type accountRuntimeInfo struct {
+	Running         bool   `json:"running"`
+	LastInboundAt   string `json:"last_inbound_at,omitempty"`
+	LastInboundText string `json:"last_inbound_text,omitempty"`
+	LastReplyAt     string `json:"last_reply_at,omitempty"`
+	LastReplyText   string `json:"last_reply_text,omitempty"`
+	LastRuleID      string `json:"last_rule_id,omitempty"`
+	LastErrorAt     string `json:"last_error_at,omitempty"`
+	LastError       string `json:"last_error,omitempty"`
+}
+
 type runtimeState struct {
-	Running           bool     `json:"running"`
-	AccountID         string   `json:"account_id"`
-	RunningAccountIDs []string `json:"running_account_ids"`
+	Running           bool                          `json:"running"`
+	AccountID         string                        `json:"account_id"`
+	RunningAccountIDs []string                      `json:"running_account_ids"`
+	AccountStatuses   map[string]accountRuntimeInfo `json:"account_statuses"`
 }
 
 type RelayManager struct {
@@ -50,6 +61,7 @@ type RelayManager struct {
 	store   *store.Store
 	mu      sync.Mutex
 	runners map[string]*RelayRunner
+	status  map[string]accountRuntimeInfo
 }
 
 func NewAdminServer(cfg config.Config, st *store.Store) *AdminServer {
@@ -61,6 +73,7 @@ func NewAdminServer(cfg config.Config, st *store.Store) *AdminServer {
 			cfg:     cfg,
 			store:   st,
 			runners: map[string]*RelayRunner{},
+			status:  map[string]accountRuntimeInfo{},
 		},
 	}
 	s.routes()
@@ -284,6 +297,15 @@ func (s *AdminServer) handleLoginStatus(w http.ResponseWriter, r *http.Request) 
 	}
 	resp := map[string]any{"status": status.Status}
 	if status.Status == "confirmed" && status.BotToken != "" && status.AccountID != "" {
+		wasRunning := false
+		if targetAccountID != "" {
+			for _, runningID := range s.run.State().RunningAccountIDs {
+				if runningID == targetAccountID {
+					wasRunning = true
+					break
+				}
+			}
+		}
 		accountPayload := store.Account{
 			RawID:    status.AccountID,
 			UserID:   status.UserID,
@@ -315,8 +337,16 @@ func (s *AdminServer) handleLoginStatus(w http.ResponseWriter, r *http.Request) 
 			settings.AccountRules[account.ID] = allEnabled
 		}
 		_ = s.store.SaveSettings(settings)
+		if wasRunning {
+			s.run.Stop(account.ID)
+			time.Sleep(300 * time.Millisecond)
+			if err := s.run.Start(account); err != nil {
+				log.Printf("auto restart after rebind failed for %s: %v", account.ID, err)
+			}
+		}
 		resp["account_id"] = account.ID
 		resp["user_id"] = account.UserID
+		resp["auto_restarted"] = wasRunning
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -334,9 +364,7 @@ func (s *AdminServer) handleLoginQR(w http.ResponseWriter, r *http.Request) {
 	}
 	code.Scale = 8
 	w.Header().Set("Content-Type", "image/png")
-	if err := png.Encode(w, code.Image()); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-	}
+	_, _ = w.Write(code.PNG())
 }
 
 func (s *AdminServer) handleRuntimeStart(w http.ResponseWriter, r *http.Request) {
@@ -478,7 +506,7 @@ func (m *RelayManager) Start(account store.Account) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	engine := relay.NewEngine(m.store, settingsLoader)
 	client := weixin.NewClient(settings.Weixin)
-	poller := weixin.NewPoller(client, m.store, engine)
+	poller := weixin.NewPoller(client, m.store, engine, m)
 
 	r.cancel = cancel
 	r.running = true
@@ -487,11 +515,14 @@ func (m *RelayManager) Start(account store.Account) error {
 	go func() {
 		defer func() {
 			r.reset()
+			m.setRunning(account.ID, false)
 		}()
 		if err := poller.Run(ctx, account); err != nil && err != context.Canceled {
 			log.Printf("relay stopped with error: %v", err)
+			m.OnError(account.ID, err.Error())
 		}
 	}()
+	m.setRunning(account.ID, true)
 	return nil
 }
 
@@ -501,6 +532,7 @@ func (m *RelayManager) Stop(accountID string) {
 	m.mu.Unlock()
 	if runner != nil {
 		runner.Stop()
+		m.setRunning(accountID, false)
 	}
 }
 
@@ -522,6 +554,7 @@ func (r *RelayRunner) Stop() {
 	if r.cancel != nil {
 		r.cancel()
 	}
+	r.running = false
 }
 
 func (m *RelayManager) State() runtimeState {
@@ -538,7 +571,47 @@ func (m *RelayManager) State() runtimeState {
 		state.Running = true
 		state.AccountID = runningIDs[0]
 	}
+	state.AccountStatuses = make(map[string]accountRuntimeInfo, len(m.status))
+	for accountID, info := range m.status {
+		state.AccountStatuses[accountID] = info
+	}
 	return state
+}
+
+func (m *RelayManager) OnInbound(accountID, _ string, text string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	info := m.status[accountID]
+	info.LastInboundAt = time.Now().UTC().Format(time.RFC3339)
+	info.LastInboundText = text
+	m.status[accountID] = info
+}
+
+func (m *RelayManager) OnReply(accountID, _ string, ruleID, text string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	info := m.status[accountID]
+	info.LastReplyAt = time.Now().UTC().Format(time.RFC3339)
+	info.LastReplyText = text
+	info.LastRuleID = ruleID
+	m.status[accountID] = info
+}
+
+func (m *RelayManager) OnError(accountID, message string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	info := m.status[accountID]
+	info.LastErrorAt = time.Now().UTC().Format(time.RFC3339)
+	info.LastError = message
+	m.status[accountID] = info
+}
+
+func (m *RelayManager) setRunning(accountID string, running bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	info := m.status[accountID]
+	info.Running = running
+	m.status[accountID] = info
 }
 
 func (r *RelayRunner) IsRunning() bool {

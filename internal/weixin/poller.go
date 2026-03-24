@@ -15,17 +15,25 @@ type Replier interface {
 	Reply(ctx context.Context, msg relay.MessageContext) (string, string, error)
 }
 
+type Observer interface {
+	OnInbound(accountID, fromUserID, text string)
+	OnReply(accountID, toUserID, ruleID, text string)
+	OnError(accountID, message string)
+}
+
 type Poller struct {
 	client  *Client
 	store   *store.Store
 	replier Replier
+	obs     Observer
 }
 
-func NewPoller(client *Client, st *store.Store, replier Replier) *Poller {
+func NewPoller(client *Client, st *store.Store, replier Replier, obs Observer) *Poller {
 	return &Poller{
 		client:  client,
 		store:   st,
 		replier: replier,
+		obs:     obs,
 	}
 }
 
@@ -46,6 +54,9 @@ func (p *Poller) Run(ctx context.Context, account store.Account) error {
 		resp, err := p.client.GetUpdates(ctx, account, cursor, nextTimeout)
 		if err != nil {
 			log.Printf("poll error: %v", err)
+			if p.obs != nil {
+				p.obs.OnError(account.ID, err.Error())
+			}
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -60,6 +71,9 @@ func (p *Poller) Run(ctx context.Context, account store.Account) error {
 		}
 		if resp.Ret != 0 || resp.ErrCode != 0 {
 			log.Printf("getupdates returned ret=%d errcode=%d errmsg=%s", resp.Ret, resp.ErrCode, resp.ErrMsg)
+			if p.obs != nil {
+				p.obs.OnError(account.ID, fmt.Sprintf("getupdates ret=%d errcode=%d errmsg=%s", resp.Ret, resp.ErrCode, resp.ErrMsg))
+			}
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -67,6 +81,9 @@ func (p *Poller) Run(ctx context.Context, account store.Account) error {
 		for _, msg := range resp.Messages {
 			if err := p.handleMessage(ctx, account, msg); err != nil {
 				log.Printf("handle message error: %v", err)
+				if p.obs != nil {
+					p.obs.OnError(account.ID, err.Error())
+				}
 			}
 		}
 	}
@@ -87,6 +104,23 @@ func (p *Poller) handleMessage(ctx context.Context, account store.Account, msg W
 	}
 
 	log.Printf("inbound from=%s text=%q", msg.FromUserID, shorten(text, 120))
+	if p.obs != nil {
+		p.obs.OnInbound(account.ID, msg.FromUserID, shorten(text, 120))
+	}
+	if cfg, err := p.client.GetConfig(ctx, account, msg.FromUserID, msg.ContextToken); err == nil {
+		if err := p.client.SendTyping(ctx, account, msg.FromUserID, cfg.TypingTicket); err != nil {
+			log.Printf("send typing error: %v", err)
+			if p.obs != nil {
+				p.obs.OnError(account.ID, "send typing: "+err.Error())
+			}
+		}
+	} else {
+		log.Printf("get config error: %v", err)
+		if p.obs != nil {
+			p.obs.OnError(account.ID, "get config: "+err.Error())
+		}
+	}
+
 	reply, ruleID, err := p.replier.Reply(ctx, relay.MessageContext{
 		AccountID:    account.ID,
 		AccountRawID: account.RawID,
@@ -106,6 +140,9 @@ func (p *Poller) handleMessage(ctx context.Context, account store.Account, msg W
 		return fmt.Errorf("send reply: %w", err)
 	}
 	log.Printf("replied to=%s via rule=%s text=%q", msg.FromUserID, ruleID, shorten(reply, 120))
+	if p.obs != nil {
+		p.obs.OnReply(account.ID, msg.FromUserID, ruleID, shorten(reply, 120))
+	}
 	return nil
 }
 

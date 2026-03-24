@@ -36,6 +36,9 @@ type WeixinMessage struct {
 	MessageID    int64         `json:"message_id,omitempty"`
 	FromUserID   string        `json:"from_user_id,omitempty"`
 	ToUserID     string        `json:"to_user_id,omitempty"`
+	ClientID     string        `json:"client_id,omitempty"`
+	MessageType  int           `json:"message_type,omitempty"`
+	MessageState int           `json:"message_state,omitempty"`
 	CreateTimeMS int64         `json:"create_time_ms,omitempty"`
 	ItemList     []MessageItem `json:"item_list,omitempty"`
 	ContextToken string        `json:"context_token,omitempty"`
@@ -59,8 +62,28 @@ type SendMessageRequest struct {
 	Msg WeixinMessage `json:"msg"`
 }
 
+type SendTypingRequest struct {
+	ILinkUserID  string   `json:"ilink_user_id,omitempty"`
+	TypingTicket string   `json:"typing_ticket,omitempty"`
+	Status       int      `json:"status,omitempty"`
+	BaseInfo     BaseInfo `json:"base_info,omitempty"`
+}
+
+type GetConfigRequest struct {
+	ILinkUserID  string   `json:"ilink_user_id,omitempty"`
+	ContextToken string   `json:"context_token,omitempty"`
+	BaseInfo     BaseInfo `json:"base_info,omitempty"`
+}
+
+type GetConfigResponse struct {
+	Ret          int    `json:"ret,omitempty"`
+	ErrMsg       string `json:"errmsg,omitempty"`
+	TypingTicket string `json:"typing_ticket,omitempty"`
+}
+
 const (
 	MessageTypeText = 1
 	MessageStateFin = 2
 	MessageTypeBot  = 2
+	TypingStatusOn  = 1
 )

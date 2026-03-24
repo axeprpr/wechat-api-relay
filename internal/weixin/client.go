@@ -160,7 +160,11 @@ func (c *Client) GetUpdates(ctx context.Context, account store.Account, cursor s
 func (c *Client) SendText(ctx context.Context, account store.Account, toUserID, contextToken, text string) error {
 	reqBody := SendMessageRequest{
 		Msg: WeixinMessage{
+			FromUserID:   "",
 			ToUserID:     toUserID,
+			ClientID:     randomClientID(),
+			MessageType:  MessageTypeBot,
+			MessageState: MessageStateFin,
 			ContextToken: contextToken,
 			ItemList: []MessageItem{
 				{
@@ -171,6 +175,32 @@ func (c *Client) SendText(ctx context.Context, account store.Account, toUserID, 
 		},
 	}
 	return c.doJSON(ctx, account, http.MethodPost, "/ilink/bot/sendmessage", reqBody, nil, 15*time.Second)
+}
+
+func (c *Client) GetConfig(ctx context.Context, account store.Account, ilinkUserID, contextToken string) (GetConfigResponse, error) {
+	reqBody := GetConfigRequest{
+		ILinkUserID:  ilinkUserID,
+		ContextToken: contextToken,
+		BaseInfo:     BaseInfo{ChannelVersion: channelVersion},
+	}
+	var respBody GetConfigResponse
+	if err := c.doJSON(ctx, account, http.MethodPost, "/ilink/bot/getconfig", reqBody, &respBody, 10*time.Second); err != nil {
+		return GetConfigResponse{}, err
+	}
+	return respBody, nil
+}
+
+func (c *Client) SendTyping(ctx context.Context, account store.Account, ilinkUserID, typingTicket string) error {
+	if strings.TrimSpace(ilinkUserID) == "" || strings.TrimSpace(typingTicket) == "" {
+		return nil
+	}
+	reqBody := SendTypingRequest{
+		ILinkUserID:  ilinkUserID,
+		TypingTicket: typingTicket,
+		Status:       TypingStatusOn,
+		BaseInfo:     BaseInfo{ChannelVersion: channelVersion},
+	}
+	return c.doJSON(ctx, account, http.MethodPost, "/ilink/bot/sendtyping", reqBody, nil, 10*time.Second)
 }
 
 func (c *Client) doJSON(ctx context.Context, account store.Account, method, endpoint string, payload any, out any, timeout time.Duration) error {
@@ -224,6 +254,14 @@ func randomWechatUIN() string {
 	}
 	v := binary.BigEndian.Uint32(b[:])
 	return base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d", v)))
+}
+
+func randomClientID() string {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("wechat-api-relay-%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("wechat-api-relay-%x", b[:])
 }
 
 func firstNonEmpty(values ...string) string {

@@ -341,8 +341,75 @@ textarea:focus,
 
 .table-actions {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
+}
+
+.icon-action {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #334155;
+  transition:
+    transform 0.16s ease,
+    border-color 0.16s ease,
+    background 0.16s ease,
+    color 0.16s ease;
+}
+
+.icon-action:hover {
+  transform: translateY(-1px);
+  border-color: rgba(148, 163, 184, 0.55);
+  background: rgba(248, 250, 252, 0.98);
+}
+
+.icon-action.primary {
+  background: linear-gradient(180deg, #111827, #0f172a);
+  border-color: #0f172a;
+  color: white;
+}
+
+.icon-action.success {
+  background: linear-gradient(180deg, #07c160, #06ad56);
+  border-color: #06ad56;
+  color: white;
+}
+
+.icon-action.danger {
+  background: rgba(254, 242, 242, 0.96);
+  border-color: rgba(254, 202, 202, 0.92);
+  color: #b91c1c;
+}
+
+.icon-action-tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%) translateY(4px);
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.94);
+  color: white;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease;
+}
+
+.icon-action:hover .icon-action-tooltip,
+.icon-action:focus-visible .icon-action-tooltip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 
 .btn {
@@ -532,11 +599,40 @@ textarea:focus,
 .hint-inline {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
   color: var(--muted);
   font-size: 12px;
   font-weight: 500;
-  line-height: 1.4;
+  line-height: 1;
+  position: relative;
+  width: 16px;
+  height: 16px;
+  cursor: help;
+}
+
+.hint-popover-inline {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  min-width: 240px;
+  max-width: 320px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.96);
+  color: white;
+  line-height: 1.45;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease;
+}
+
+.hint-inline:hover .hint-popover-inline,
+.hint-inline:focus-visible .hint-popover-inline {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .tab-card,

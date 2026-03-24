@@ -138,7 +138,7 @@ func runRelay(args []string) error {
 
 	engine := relay.NewEngine(st, settingsLoader)
 	client := weixin.NewClient(settings.Weixin)
-	poller := weixin.NewPoller(client, st, engine)
+	poller := weixin.NewPoller(client, st, engine, nil)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

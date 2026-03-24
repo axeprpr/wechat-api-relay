@@ -5,12 +5,12 @@ import {
   Bot,
   ChevronDown,
   CircleHelp,
+  FilePenLine,
   LoaderCircle,
   MessageSquareCode,
   Plus,
   Power,
   QrCode,
-  RefreshCw,
   Search,
   Trash2,
   Wifi,
@@ -71,23 +71,25 @@ type RuntimeState = {
   running: boolean
   account_id: string
   running_account_ids: string[]
+  account_statuses: Record<
+    string,
+    {
+      running: boolean
+      last_inbound_at?: string
+      last_inbound_text?: string
+      last_reply_at?: string
+      last_reply_text?: string
+      last_rule_id?: string
+      last_error_at?: string
+      last_error?: string
+    }
+  >
 }
 
 type AppState = {
   settings: Settings
   accounts: Account[]
   runtime: RuntimeState
-}
-
-type PreviewResult = {
-  request_method: string
-  request_url: string
-  request_headers: Record<string, string>
-  request_body: string
-  status_code: number
-  response_body: string
-  reply: string
-  duration_ms: number
 }
 
 type RuleDraft = Rule
@@ -118,7 +120,7 @@ const emptyRule = (): Rule => ({
   match: { mode: 'all', pattern: '' },
   target: {
     method: 'POST',
-    url_template: 'https://literal:api.openai.com/v1/chat/completions',
+    url_template: 'https://api.openai.com/v1/chat/completions',
     headers: {
       Authorization: 'Bearer 你的Key',
       'Content-Type': 'application/json',
@@ -140,7 +142,10 @@ const emptyRule = (): Rule => ({
 
 function App() {
   const [state, setState] = React.useState<AppState | null>(null)
-  const [currentView, setCurrentView] = React.useState<ViewKey>('rules')
+  const [currentView, setCurrentView] = React.useState<ViewKey>(() => {
+    const saved = window.localStorage.getItem('wechat-api-relay:view')
+    return saved === 'weixin' ? 'weixin' : 'rules'
+  })
   const [toasts, setToasts] = React.useState<ToastItem[]>([])
 
   const [ruleSearch, setRuleSearch] = React.useState('')
@@ -150,15 +155,6 @@ function App() {
   const [ruleDraft, setRuleDraft] = React.useState<RuleDraft>(emptyRule())
   const [ruleJsonDrafts, setRuleJsonDrafts] = React.useState<JsonDrafts>({ headers: '{}', query: '{}' })
   const [editingRuleId, setEditingRuleId] = React.useState('')
-
-  const [debugOpen, setDebugOpen] = React.useState(false)
-  const [debugRule, setDebugRule] = React.useState<Rule | null>(null)
-  const [debugAccountId, setDebugAccountId] = React.useState('')
-  const [debugUserId, setDebugUserId] = React.useState('debug-user@im.wechat')
-  const [debugText, setDebugText] = React.useState('你好')
-  const [previewResult, setPreviewResult] = React.useState<PreviewResult | null>(null)
-  const [previewError, setPreviewError] = React.useState('')
-  const [previewLoading, setPreviewLoading] = React.useState(false)
 
   const [configModalOpen, setConfigModalOpen] = React.useState(false)
   const [configStep, setConfigStep] = React.useState<ConfigStep>(1)
@@ -175,6 +171,8 @@ function App() {
   const [savingConfig, setSavingConfig] = React.useState(false)
   const [loginLoading, setLoginLoading] = React.useState(false)
   const [accountSearch, setAccountSearch] = React.useState('')
+  const loginHandledRef = React.useRef('')
+  const loginPollingRef = React.useRef(false)
 
   const toast = React.useCallback((kind: ToastKind, message: string) => {
     const item = { id: Date.now() + Math.floor(Math.random() * 1000), kind, message }
@@ -192,12 +190,15 @@ function App() {
   const loadState = React.useCallback(async () => {
     const data = await apiJSON<AppState>('/api/state')
     setState(data)
-    setDebugAccountId((current) => current || data.settings.active_account_id || data.accounts[0]?.id || '')
   }, [])
 
   React.useEffect(() => {
     void loadState()
   }, [loadState])
+
+  React.useEffect(() => {
+    window.localStorage.setItem('wechat-api-relay:view', currentView)
+  }, [currentView])
 
   const bindRulesAfterLogin = React.useCallback(
     async (accountID: string, ruleIDs: string[]) => {
@@ -223,14 +224,21 @@ function App() {
   React.useEffect(() => {
     if (!loginSession) return
     const timer = window.setInterval(async () => {
+      if (loginPollingRef.current) return
+      loginPollingRef.current = true
       try {
         const params = new URLSearchParams({ session_key: loginSession })
         if (editingAccountId) params.set('target_account_id', editingAccountId)
         const data = await apiJSON<{ status: string; account_id?: string }>(`/api/login/status?${params.toString()}`)
         if (data.status === 'confirmed') {
+          if (loginHandledRef.current === loginSession) {
+            return
+          }
+          loginHandledRef.current = loginSession
           window.clearInterval(timer)
           setLoginSession('')
           setLoginLoading(false)
+          setQrURL('')
           if (data.account_id && pendingRuleIDs.length > 0) {
             await bindRulesAfterLogin(data.account_id, pendingRuleIDs)
             setPendingRuleIDs([])
@@ -243,9 +251,14 @@ function App() {
         setLoginSession('')
         setLoginLoading(false)
         toast('error', getErrorMessage(error))
+      } finally {
+        loginPollingRef.current = false
       }
     }, 2500)
-    return () => window.clearInterval(timer)
+    return () => {
+      window.clearInterval(timer)
+      loginPollingRef.current = false
+    }
   }, [bindRulesAfterLogin, editingAccountId, loadState, loginSession, pendingRuleIDs, toast])
 
   const persistSettings = React.useCallback(
@@ -342,42 +355,6 @@ function App() {
     }
   }
 
-  const openDebugRule = (rule: Rule) => {
-    setDebugRule(structuredClone(rule))
-    setPreviewResult(null)
-    setPreviewError('')
-    setDebugText('你好')
-    setDebugOpen(true)
-  }
-
-  const runPreview = async () => {
-    if (!debugRule) return
-    setPreviewLoading(true)
-    setPreviewResult(null)
-    setPreviewError('')
-    try {
-      const data = await apiJSON<{ result?: PreviewResult; error?: string }>('/api/rules/preview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          rule: debugRule,
-          account_id: debugAccountId,
-          user_id: debugUserId,
-          text: debugText,
-        }),
-      })
-      setPreviewResult(data.result ?? null)
-      setPreviewError(data.error ?? '')
-      toast(data.error ? 'error' : 'success', data.error || '接口调试完成')
-    } catch (error) {
-      const message = getErrorMessage(error)
-      setPreviewError(message)
-      toast('error', message)
-    } finally {
-      setPreviewLoading(false)
-    }
-  }
-
   const openCreateConfig = () => {
     setEditingAccountId('')
     setConfigDraft({
@@ -435,6 +412,7 @@ function App() {
   const startConfigLogin = async () => {
     try {
       setLoginLoading(true)
+      loginHandledRef.current = ''
       const nextSettings: Settings = {
         ...state.settings,
         weixin: {
@@ -460,6 +438,26 @@ function App() {
   const setAccountOnline = async (accountID: string) => {
     try {
       await persistSettings({ ...state.settings, active_account_id: accountID })
+      setState((current) =>
+        current
+          ? {
+              ...current,
+              runtime: {
+                ...current.runtime,
+                running: true,
+                account_id: accountID,
+                running_account_ids: Array.from(new Set([...(current.runtime.running_account_ids ?? []), accountID])),
+                account_statuses: {
+                  ...(current.runtime.account_statuses ?? {}),
+                  [accountID]: {
+                    ...(current.runtime.account_statuses?.[accountID] ?? {}),
+                    running: true,
+                  },
+                },
+              },
+            }
+          : current
+      )
       await apiJSON(`/api/runtime/start?account_id=${encodeURIComponent(accountID)}`, { method: 'POST' })
       await loadState()
       toast('success', '微信配置已上线')
@@ -470,6 +468,26 @@ function App() {
 
   const setAccountOffline = async (accountID: string) => {
     try {
+      setState((current) =>
+        current
+          ? {
+              ...current,
+              runtime: {
+                ...current.runtime,
+                running_account_ids: (current.runtime.running_account_ids ?? []).filter((id) => id !== accountID),
+                account_id: current.runtime.account_id === accountID ? '' : current.runtime.account_id,
+                running: (current.runtime.running_account_ids ?? []).some((id) => id !== accountID),
+                account_statuses: {
+                  ...(current.runtime.account_statuses ?? {}),
+                  [accountID]: {
+                    ...(current.runtime.account_statuses?.[accountID] ?? {}),
+                    running: false,
+                  },
+                },
+              },
+            }
+          : current
+      )
       await apiJSON(`/api/runtime/stop?account_id=${encodeURIComponent(accountID)}`, { method: 'POST' })
       await loadState()
       toast('success', '微信配置已下线')
@@ -585,9 +603,12 @@ function App() {
                         </td>
                         <td>
                           <div className='table-actions'>
-                            <button className='btn btn-secondary' onClick={() => openEditRule(rule)}>编辑</button>
-                            <button className='btn btn-secondary' onClick={() => openDebugRule(rule)}>调试</button>
-                            <button className='btn btn-danger' onClick={() => void deleteRule(rule.id)}>删除</button>
+                            <IconActionButton label='编辑规则' onClick={() => openEditRule(rule)}>
+                              <FilePenLine size={15} />
+                            </IconActionButton>
+                            <IconActionButton label='删除规则' tone='danger' onClick={() => void deleteRule(rule.id)}>
+                              <Trash2 size={15} />
+                            </IconActionButton>
                           </div>
                         </td>
                       </tr>
@@ -655,22 +676,21 @@ function App() {
                           </td>
                           <td>
                             <div className='table-actions'>
-                              <button className='btn btn-secondary' onClick={() => openEditConfig(account)}>编辑</button>
+                              <IconActionButton label='编辑配置' onClick={() => openEditConfig(account)}>
+                                <FilePenLine size={15} />
+                              </IconActionButton>
                               {isOnline ? (
-                                <button className='btn btn-secondary' onClick={() => void setAccountOffline(account.id)}>
+                                <IconActionButton label='下线' tone='danger' onClick={() => void setAccountOffline(account.id)}>
                                   <WifiOff size={15} />
-                                  下线
-                                </button>
+                                </IconActionButton>
                               ) : (
-                                <button className='btn btn-primary' onClick={() => void setAccountOnline(account.id)}>
+                                <IconActionButton label='上线' tone='success' onClick={() => void setAccountOnline(account.id)}>
                                   <Power size={15} />
-                                  上线
-                                </button>
+                                </IconActionButton>
                               )}
-                              <button className='btn btn-danger' onClick={() => void deleteAccount(account.id)}>
+                              <IconActionButton label='删除配置' tone='danger' onClick={() => void deleteAccount(account.id)}>
                                 <Trash2 size={15} />
-                                删除
-                              </button>
+                              </IconActionButton>
                             </div>
                           </td>
                         </tr>
@@ -698,13 +718,13 @@ function App() {
 
           {ruleStep === 1 ? (
             <div className='dialog-grid'>
-              <FormField label='规则编号' hint='规则的稳定标识。已绑定到账号后不要频繁修改。'>
+              <FormField label='规则编号'>
                 <input value={ruleDraft.id} onChange={(e) => setRuleDraft((draft) => ({ ...draft, id: e.target.value }))} />
               </FormField>
-              <FormField label='规则名称' hint='给人看的名称。建议按业务命名，例如“订单查询”。'>
+              <FormField label='规则名称'>
                 <input value={ruleDraft.name} onChange={(e) => setRuleDraft((draft) => ({ ...draft, name: e.target.value }))} />
               </FormField>
-              <FormField label='是否启用' hint='关闭后，已绑定这条规则的微信配置也不会再命中。'>
+              <FormField label='是否启用'>
                 <SelectControl
                   value={String(ruleDraft.enabled)}
                   onChange={(value) => setRuleDraft((draft) => ({ ...draft, enabled: value === 'true' }))}
@@ -714,7 +734,7 @@ function App() {
                   ]}
                 />
               </FormField>
-              <FormField label='匹配方式' hint='命令型消息建议用前缀匹配；兜底规则才建议用全部匹配。'>
+              <FormField label='匹配方式' hint='兜底规则才建议用“全部匹配”，命令类消息更适合用“前缀匹配”或“完全匹配”。'>
                 <SelectControl
                   value={ruleDraft.match.mode}
                   onChange={(value) => setRuleDraft((draft) => ({ ...draft, match: { ...draft.match, mode: value } }))}
@@ -734,7 +754,7 @@ function App() {
                   onChange={(e) => setRuleDraft((draft) => ({ ...draft, match: { ...draft.match, pattern: e.target.value } }))}
                 />
               </FormField>
-              <FormField label='规则说明' hint='写清楚这条规则做什么、调用哪个系统。' full>
+              <FormField label='规则说明' full>
                 <textarea value={ruleDraft.description} onChange={(e) => setRuleDraft((draft) => ({ ...draft, description: e.target.value }))} />
               </FormField>
             </div>
@@ -743,7 +763,7 @@ function App() {
           {ruleStep === 2 ? (
             <div className='dialog-stack'>
               <div className='dialog-grid'>
-                <FormField label='请求方法' hint='大多数业务接口只会用到 GET、POST、PUT、PATCH、DELETE。'>
+                <FormField label='请求方法'>
                   <SelectControl
                     value={ruleDraft.target.method}
                     onChange={(value) => setRuleDraft((draft) => ({ ...draft, target: { ...draft.target, method: value } }))}
@@ -763,9 +783,9 @@ function App() {
                     onChange={(e) => setRuleDraft((draft) => ({ ...draft, target: { ...draft.target, timeout_ms: Number(e.target.value) } }))}
                   />
                 </FormField>
-                <FormField label='接口地址模板' hint='OpenAI 兼容示例：https://literal:api.openai.com/v1/chat/completions' full>
+                <FormField label='接口地址模板' hint='OpenAI 兼容示例：https://api.openai.com/v1/chat/completions' full>
                   <input
-                    placeholder='OpenAI 兼容示例：https://literal:api.openai.com/v1/chat/completions'
+                    placeholder='OpenAI 兼容示例：https://api.openai.com/v1/chat/completions'
                     value={ruleDraft.target.url_template}
                     onChange={(e) => setRuleDraft((draft) => ({ ...draft, target: { ...draft.target, url_template: e.target.value } }))}
                   />
@@ -844,16 +864,13 @@ function App() {
 
           {ruleStep === 3 ? (
             <div className='dialog-grid'>
-              <FormField label='回复模板' hint='这是最终回到微信里的文本内容。'>
+              <FormField label='回复模板'>
                 <textarea
                   className='mono-area'
                   value={ruleDraft.response.template}
                   onChange={(e) => setRuleDraft((draft) => ({ ...draft, response: { ...draft.response, template: e.target.value } }))}
                 />
               </FormField>
-              <InfoCard title='配置完成后再调试'>
-                规则保存后，可以在规则列表里点“调试”，单独验证接口是否通、模板是否正确。
-              </InfoCard>
             </div>
           ) : null}
 
@@ -887,7 +904,7 @@ function App() {
               <FormField label='微信接口地址' hint='默认一般为 https://ilinkai.weixin.qq.com，不要填成业务接口。'>
                 <input value={configDraft.base_url} onChange={(e) => setConfigDraft((draft) => ({ ...draft, base_url: e.target.value }))} />
               </FormField>
-              <FormField label='机器人类型' hint='通常保持默认值 3 即可。'>
+              <FormField label='机器人类型'>
                 <input value={configDraft.bot_type} onChange={(e) => setConfigDraft((draft) => ({ ...draft, bot_type: e.target.value }))} />
               </FormField>
               <FormField label='路由标签' hint='只有上游明确要求时才需要填写。' full>
@@ -950,64 +967,6 @@ function App() {
               </button>
             )}
           </div>
-        </DialogShell>
-      ) : null}
-
-      {debugOpen && debugRule ? (
-        <DialogShell title={`接口调试 · ${debugRule.name}`} onClose={() => setDebugOpen(false)} width='wide'>
-          <div className='dialog-grid'>
-            <FormField label='调试微信配置' hint='用哪个已绑定的微信账号作为上下文执行规则。'>
-              <SelectControl
-                value={debugAccountId}
-                onChange={setDebugAccountId}
-                options={[
-                  { value: '', label: '请选择一个微信配置' },
-                  ...state.accounts.map((account) => ({ value: account.id, label: account.user_id || account.id })),
-                ]}
-              />
-            </FormField>
-            <FormField label='发送方标识' hint='模拟是谁给微信发了消息。涉及会话隔离时很关键。'>
-              <input value={debugUserId} onChange={(e) => setDebugUserId(e.target.value)} />
-            </FormField>
-            <FormField label='样例消息' hint='这条消息会参与规则匹配、模板渲染和最终请求。' full>
-              <textarea value={debugText} onChange={(e) => setDebugText(e.target.value)} />
-            </FormField>
-          </div>
-
-          <div className='dialog-footer inline-left'>
-            <button className='btn btn-primary' onClick={() => void runPreview()} disabled={previewLoading || !debugAccountId}>
-              {previewLoading ? <LoaderCircle size={15} className='spin' /> : <RefreshCw size={15} />}
-              发起调试
-            </button>
-          </div>
-
-          {previewError ? <div className='error-box'>{previewError}</div> : null}
-
-          {previewResult ? (
-            <div className='preview-grid'>
-              <PreviewCard title='请求概览'>
-                <div className='preview-meta'>
-                  <span>{previewResult.request_method}</span>
-                  <span>{previewResult.request_url}</span>
-                  <span>HTTP {previewResult.status_code || 'ERR'}</span>
-                  <span>{previewResult.duration_ms} ms</span>
-                </div>
-              </PreviewCard>
-              <PreviewCard title='渲染后的请求体'>
-                <pre>{previewResult.request_body || '(empty)'}</pre>
-              </PreviewCard>
-              <PreviewCard title='最终回复内容'>
-                <pre>{previewResult.reply || '(empty)'}</pre>
-              </PreviewCard>
-              <PreviewCard title='上游响应内容' wide>
-                <pre>{previewResult.response_body || '(empty)'}</pre>
-              </PreviewCard>
-            </div>
-          ) : (
-            <InfoCard title='这里看什么'>
-              这个页面只用来验证规则调用链。你可以看见发出去的请求体、上游响应，以及最终会回给微信的文本内容。
-            </InfoCard>
-          )}
         </DialogShell>
       ) : null}
 
@@ -1114,9 +1073,9 @@ function FormField({
 
 function HintText({ children }: { children: React.ReactNode }) {
   return (
-    <span className='hint-inline'>
+    <span className='hint-inline' tabIndex={0}>
       <CircleHelp size={14} />
-      <span>{children}</span>
+      <span className='hint-popover-inline'>{children}</span>
     </span>
   )
 }
@@ -1252,6 +1211,25 @@ function InfoCard({ title, children }: { title: string; children: React.ReactNod
       <strong>{title}</strong>
       <p>{children}</p>
     </div>
+  )
+}
+
+function IconActionButton({
+  label,
+  tone = 'default',
+  onClick,
+  children,
+}: {
+  label: string
+  tone?: 'default' | 'primary' | 'success' | 'danger'
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button className={`icon-action ${tone}`} onClick={onClick} aria-label={label} title={label}>
+      {children}
+      <span className='icon-action-tooltip'>{label}</span>
+    </button>
   )
 }
 

@@ -125,7 +125,7 @@ func (e *Engine) executeRule(ctx context.Context, rule store.Rule, msg MessageCo
 	}
 
 	if strings.HasPrefix(finalURL, "builtin://") {
-		return executeBuiltin(rule, reqData, method, finalURL, headers, query, bodyText)
+		return e.executeBuiltin(rule, msg, reqData, method, finalURL, headers, query, bodyText)
 	}
 
 	timeout := time.Duration(rule.Target.TimeoutMS) * time.Millisecond
@@ -200,9 +200,16 @@ func (e *Engine) executeRule(ctx context.Context, rule store.Rule, msg MessageCo
 	return result, nil
 }
 
-func executeBuiltin(rule store.Rule, reqData templatePayload, method, finalURL string, headers, query map[string]string, bodyText string) (ExecutionResult, error) {
+func (e *Engine) executeBuiltin(rule store.Rule, msg MessageContext, reqData templatePayload, method, finalURL string, headers, query map[string]string, bodyText string) (ExecutionResult, error) {
 	switch finalURL {
 	case "builtin://ping-pong":
+		replyBody := "pong"
+		counterUserID := "__builtin_ping_pong__" + msg.FromUserID
+		if history, err := e.store.LoadConversation(msg.AccountID, counterUserID); err == nil {
+			count := len(history) + 1
+			replyBody = fmt.Sprintf("pong #%d", count)
+			_ = e.store.SaveConversation(msg.AccountID, counterUserID, append(history, store.Message{Role: "assistant", Content: replyBody}))
+		}
 		respData := templatePayload{
 			Message: reqData.Message,
 			Account: reqData.Account,
@@ -213,9 +220,9 @@ func executeBuiltin(rule store.Rule, reqData templatePayload, method, finalURL s
 			},
 			Response: map[string]any{
 				"status_code": 200,
-				"body":        "pong",
+				"body":        replyBody,
 				"json": map[string]any{
-					"reply": "pong",
+					"reply": replyBody,
 				},
 				"headers": map[string]any{},
 			},
@@ -226,7 +233,7 @@ func executeBuiltin(rule store.Rule, reqData templatePayload, method, finalURL s
 		}
 		reply = strings.TrimSpace(reply)
 		if reply == "" {
-			reply = "pong"
+			reply = replyBody
 		}
 		return ExecutionResult{
 			RuleID:         rule.ID,
@@ -236,9 +243,9 @@ func executeBuiltin(rule store.Rule, reqData templatePayload, method, finalURL s
 			RequestQuery:   query,
 			RequestBody:    bodyText,
 			StatusCode:     200,
-			ResponseBody:   "pong",
+			ResponseBody:   replyBody,
 			ResponseJSON: map[string]any{
-				"reply": "pong",
+				"reply": replyBody,
 			},
 			ResponseHeader: map[string]any{},
 			Reply:          reply,
