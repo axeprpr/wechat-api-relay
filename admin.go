@@ -80,6 +80,7 @@ func (s *AdminServer) Run() error {
 func (s *AdminServer) routes() {
 	s.mux.HandleFunc("/api/state", s.handleState)
 	s.mux.HandleFunc("/api/settings", s.handleSettings)
+	s.mux.HandleFunc("/api/accounts/delete", s.handleAccountDelete)
 	s.mux.HandleFunc("/api/rules/preview", s.handleRulePreview)
 	s.mux.HandleFunc("/api/runtime/start", s.handleRuntimeStart)
 	s.mux.HandleFunc("/api/runtime/stop", s.handleRuntimeStop)
@@ -141,6 +142,48 @@ func (s *AdminServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
 	}
+}
+
+func (s *AdminServer) handleAccountDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	accountID := strings.TrimSpace(r.URL.Query().Get("account_id"))
+	if accountID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("missing account_id"))
+		return
+	}
+	s.run.Stop(accountID)
+
+	settings, err := s.store.LoadSettings(s.cfg)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	delete(settings.AccountRules, accountID)
+	if settings.ActiveAccountID == accountID {
+		settings.ActiveAccountID = ""
+	}
+	if err := s.store.SaveSettings(settings); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := s.store.DeleteAccount(accountID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	settings, accounts, rt, err := s.loadState()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"settings": settings,
+		"accounts": accounts,
+		"runtime":  rt,
+	})
 }
 
 type rulePreviewRequest struct {
@@ -223,6 +266,7 @@ func (s *AdminServer) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 
 func (s *AdminServer) handleLoginStatus(w http.ResponseWriter, r *http.Request) {
 	sessionKey := strings.TrimSpace(r.URL.Query().Get("session_key"))
+	targetAccountID := strings.TrimSpace(r.URL.Query().Get("target_account_id"))
 	if sessionKey == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("missing session_key"))
 		return
@@ -240,13 +284,22 @@ func (s *AdminServer) handleLoginStatus(w http.ResponseWriter, r *http.Request) 
 	}
 	resp := map[string]any{"status": status.Status}
 	if status.Status == "confirmed" && status.BotToken != "" && status.AccountID != "" {
-		account, err := s.store.SaveAccount(store.Account{
+		accountPayload := store.Account{
 			RawID:    status.AccountID,
 			UserID:   status.UserID,
 			Token:    status.BotToken,
 			BaseURL:  localFirstNonEmpty(status.BaseURL, settings.Weixin.BaseURL),
 			RouteTag: settings.Weixin.RouteTag,
-		})
+		}
+		var (
+			account store.Account
+			err     error
+		)
+		if targetAccountID != "" {
+			account, err = s.store.SaveAccountAs(accountPayload, targetAccountID)
+		} else {
+			account, err = s.store.SaveAccount(accountPayload)
+		}
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return

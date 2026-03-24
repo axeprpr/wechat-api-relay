@@ -124,6 +124,10 @@ func (e *Engine) executeRule(ctx context.Context, rule store.Rule, msg MessageCo
 		return ExecutionResult{}, fmt.Errorf("build query: %w", err)
 	}
 
+	if strings.HasPrefix(finalURL, "builtin://") {
+		return executeBuiltin(rule, reqData, method, finalURL, headers, query, bodyText)
+	}
+
 	timeout := time.Duration(rule.Target.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
 		timeout = 60 * time.Second
@@ -194,6 +198,62 @@ func (e *Engine) executeRule(ctx context.Context, rule store.Rule, msg MessageCo
 		return result, fmt.Errorf("upstream http %d", resp.StatusCode)
 	}
 	return result, nil
+}
+
+func executeBuiltin(rule store.Rule, reqData templatePayload, method, finalURL string, headers, query map[string]string, bodyText string) (ExecutionResult, error) {
+	switch finalURL {
+	case "builtin://ping-pong":
+		respData := templatePayload{
+			Message: reqData.Message,
+			Account: reqData.Account,
+			Now:     reqData.Now,
+			Request: map[string]any{
+				"url":  finalURL,
+				"body": bodyText,
+			},
+			Response: map[string]any{
+				"status_code": 200,
+				"body":        "pong",
+				"json": map[string]any{
+					"reply": "pong",
+				},
+				"headers": map[string]any{},
+			},
+		}
+		reply, err := renderTemplate(rule.Response.Template, respData)
+		if err != nil {
+			return ExecutionResult{}, fmt.Errorf("render response template: %w", err)
+		}
+		reply = strings.TrimSpace(reply)
+		if reply == "" {
+			reply = "pong"
+		}
+		return ExecutionResult{
+			RuleID:         rule.ID,
+			RequestMethod:  method,
+			RequestURL:     finalURL,
+			RequestHeaders: headers,
+			RequestQuery:   query,
+			RequestBody:    bodyText,
+			StatusCode:     200,
+			ResponseBody:   "pong",
+			ResponseJSON: map[string]any{
+				"reply": "pong",
+			},
+			ResponseHeader: map[string]any{},
+			Reply:          reply,
+			DurationMS:     0,
+		}, nil
+	default:
+		return ExecutionResult{
+			RuleID:         rule.ID,
+			RequestMethod:  method,
+			RequestURL:     finalURL,
+			RequestHeaders: headers,
+			RequestQuery:   query,
+			RequestBody:    bodyText,
+		}, fmt.Errorf("unsupported builtin target: %s", finalURL)
+	}
 }
 
 func selectRule(rules []store.Rule, text string) (store.Rule, error) {

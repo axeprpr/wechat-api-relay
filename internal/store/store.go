@@ -20,13 +20,15 @@ type Store struct {
 }
 
 type Account struct {
-	ID       string    `json:"id"`
-	RawID    string    `json:"raw_id"`
-	UserID   string    `json:"user_id"`
-	Token    string    `json:"token"`
-	BaseURL  string    `json:"base_url"`
-	SavedAt  time.Time `json:"saved_at"`
-	RouteTag string    `json:"route_tag,omitempty"`
+	ID        string    `json:"id"`
+	RawID     string    `json:"raw_id"`
+	UserID    string    `json:"user_id"`
+	Token     string    `json:"token"`
+	BaseURL   string    `json:"base_url"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	SavedAt   time.Time `json:"saved_at"`
+	RouteTag  string    `json:"route_tag,omitempty"`
 }
 
 type Message struct {
@@ -136,7 +138,6 @@ func (s *Store) SaveAccount(account Account) (Account, error) {
 	defer s.mu.Unlock()
 
 	account.ID = normalizeID(account.RawID)
-	account.SavedAt = time.Now().UTC()
 	if account.ID == "" {
 		return Account{}, errors.New("empty account id")
 	}
@@ -145,10 +146,52 @@ func (s *Store) SaveAccount(account Account) (Account, error) {
 	}
 
 	path := filepath.Join(s.root, "accounts", account.ID+".json")
+	if existing, err := readAccountLocked(path); err == nil {
+		account.CreatedAt = nonZeroTime(existing.CreatedAt, existing.SavedAt)
+	}
+	account.applyTimestamps()
 	if err := writeJSON(path, account); err != nil {
 		return Account{}, err
 	}
 	return account, nil
+}
+
+func (s *Store) SaveAccountAs(account Account, targetID string) (Account, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	account.ID = strings.TrimSpace(targetID)
+	if account.ID == "" {
+		return Account{}, errors.New("empty target account id")
+	}
+	if account.Token == "" {
+		return Account{}, errors.New("empty account token")
+	}
+
+	path := filepath.Join(s.root, "accounts", account.ID+".json")
+	if existing, err := readAccountLocked(path); err == nil {
+		account.CreatedAt = nonZeroTime(existing.CreatedAt, existing.SavedAt)
+	}
+	account.applyTimestamps()
+	if err := writeJSON(path, account); err != nil {
+		return Account{}, err
+	}
+	return account, nil
+}
+
+func (s *Store) DeleteAccount(accountID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return errors.New("empty account id")
+	}
+	if err := os.Remove(filepath.Join(s.root, "accounts", accountID+".json")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	_ = os.Remove(filepath.Join(s.root, "pollers", accountID+".cursor"))
+	return nil
 }
 
 func (s *Store) LoadAccount(requestedID string) (Account, error) {
@@ -160,6 +203,7 @@ func (s *Store) LoadAccount(requestedID string) (Account, error) {
 		if err := readJSON(filepath.Join(s.root, "accounts", requestedID+".json"), &account); err != nil {
 			return Account{}, fmt.Errorf("load account %s: %w", requestedID, err)
 		}
+		account = hydrateAccount(account)
 		return account, nil
 	}
 
@@ -183,6 +227,7 @@ func (s *Store) LoadAccount(requestedID string) (Account, error) {
 		if err := readJSON(filepath.Join(s.root, "accounts", entry.Name()), &account); err != nil {
 			continue
 		}
+		account = hydrateAccount(account)
 		candidates = append(candidates, candidate{account: account})
 	}
 	if len(candidates) == 0 {
@@ -190,7 +235,7 @@ func (s *Store) LoadAccount(requestedID string) (Account, error) {
 	}
 
 	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].account.SavedAt.After(candidates[j].account.SavedAt)
+		return candidates[i].account.UpdatedAt.After(candidates[j].account.UpdatedAt)
 	})
 	return candidates[0].account, nil
 }
@@ -212,10 +257,11 @@ func (s *Store) ListAccounts() ([]Account, error) {
 		if err := readJSON(filepath.Join(s.root, "accounts", entry.Name()), &account); err != nil {
 			continue
 		}
+		account = hydrateAccount(account)
 		accounts = append(accounts, account)
 	}
 	sort.Slice(accounts, func(i, j int) bool {
-		return accounts[i].SavedAt.After(accounts[j].SavedAt)
+		return accounts[i].UpdatedAt.After(accounts[j].UpdatedAt)
 	})
 	return accounts, nil
 }
@@ -288,9 +334,33 @@ func writeJSON(path string, value any) error {
 func defaultRules(defaults config.Config) []Rule {
 	return []Rule{
 		{
+			ID:          "builtin-ping-pong",
+			Name:        "内置 Ping Pong",
+			Description: "收到 ping 时直接返回 pong，不请求外部接口。",
+			Enabled:     true,
+			Match: MatchConfig{
+				Mode:    "exact",
+				Pattern: "ping",
+			},
+			Target: TargetConfig{
+				Method:      "GET",
+				URLTemplate: "builtin://ping-pong",
+				Headers:     map[string]string{},
+				Query:       map[string]string{},
+				TimeoutMS:   1000,
+			},
+			Response: ResponseConfig{
+				Template: `{{ .Response.body }}`,
+			},
+			Conversation: ConversationConfig{
+				SaveHistory:  false,
+				HistoryLimit: 1,
+			},
+		},
+		{
 			ID:          "openai-compatible",
-			Name:        "OpenAI Compatible LLM",
-			Description: "Forward every message to an OpenAI-compatible chat completions endpoint.",
+			Name:        "OpenAI 兼容大模型",
+			Description: "把消息转发到 OpenAI 兼容的 chat completions 接口。",
 			Enabled:     true,
 			Match: MatchConfig{
 				Mode: "all",
@@ -359,4 +429,37 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func readAccountLocked(path string) (Account, error) {
+	var account Account
+	if err := readJSON(path, &account); err != nil {
+		return Account{}, err
+	}
+	return hydrateAccount(account), nil
+}
+
+func hydrateAccount(account Account) Account {
+	account.CreatedAt = nonZeroTime(account.CreatedAt, account.SavedAt, account.UpdatedAt)
+	account.UpdatedAt = nonZeroTime(account.UpdatedAt, account.SavedAt, account.CreatedAt)
+	account.SavedAt = nonZeroTime(account.SavedAt, account.UpdatedAt, account.CreatedAt)
+	return account
+}
+
+func (a *Account) applyTimestamps() {
+	now := time.Now().UTC()
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = nonZeroTime(a.SavedAt, now)
+	}
+	a.UpdatedAt = now
+	a.SavedAt = now
+}
+
+func nonZeroTime(values ...time.Time) time.Time {
+	for _, value := range values {
+		if !value.IsZero() {
+			return value
+		}
+	}
+	return time.Time{}
 }
